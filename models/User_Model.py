@@ -32,8 +32,8 @@ class User:
                         "username": user_details.data[0].get("username"),
                     }
                     st.rerun()
-                except Exception:
-                    st.error("Invalid credentials")
+                except Exception as e:
+                    st.error(f"Login failed: {e}")
 
     def logout(self):
         """Sign out from Supabase and clear the local session."""

@@ -136,7 +136,7 @@ class InvQouteUI:
             st.session_state.loaded = True
         if 'material_df' not in st.session_state:
             st.session_state.material_df = pd.DataFrame(columns=["Description", "Unit price", "Quantity", "Total amount"])
-            st.session_state.edit_material_df = st.session_state.material_df.copy()
+            st.session_state.edit_material_df = pd.DataFrame(columns=["Description", "Unit price", "Quantity"])
 
     def cust_details(self):
         st.write("**Customer Details**")
@@ -216,117 +216,177 @@ class InvQouteUI:
             st.session_state["current_status"] = "Reset"
             
     def capture_items(self):
-        st.write("**MATERIALS**")
-        if st.session_state.get("current_status", "") == "Reset":
-            self.descr, self.unit_price, self.qty_value = None, 0.00, 1
-            st.session_state["current_status"] = ""
-        else:
-            self.descr, self.unit_price, self.qty_value = st.session_state.get("descr", None), st.session_state.get("unit_price", 0.00), st.session_state.get("qty", 1)
+        # ── Ensure both DataFrames always exist before anything reads them ──
+        if "material_df" not in st.session_state:
+            st.session_state.material_df = pd.DataFrame(
+                columns=["Description", "Unit price", "Quantity", "Total amount"]
+            )
+        if "edit_material_df" not in st.session_state:
+            st.session_state.edit_material_df = pd.DataFrame(
+                columns=["Description", "Unit price", "Quantity"]
+            )
 
-        edited_df = st.data_editor(
-            st.session_state.edit_material_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="materials_editor",
-            column_config={
-                "Unit price": st.column_config.NumberColumn(min_value=0),
-                "Quantity": st.column_config.NumberColumn(min_value=1),
-                "Total amount": st.column_config.NumberColumn(disabled=True),
-            }
+        # ── Reset staging editor after a successful "Add to Items" ──────────
+        if st.session_state.get("current_status", "") == "Reset":
+            st.session_state.edit_material_df = pd.DataFrame(
+                columns=["Description", "Unit price", "Quantity"]
+            )
+            st.session_state["current_status"] = ""
+            if "materials_editor" in st.session_state:
+                del st.session_state["materials_editor"]
+
+        # ════════════════════════════════════════════════════════════════════
+        # SECTION 1 — MATERIALS (staging / input area)
+        # ════════════════════════════════════════════════════════════════════
+        st.markdown(
+            "<p style='font-size:1rem; font-weight:700; color:#1f2937; "
+            "margin-bottom:0.2rem;'>📦 MATERIALS</p>"
+            "<p style='font-size:0.82rem; color:#6b7280; margin-top:0;'>"
+            "Add your rows below, then click <b>Add to Items</b> to confirm them.</p>",
+            unsafe_allow_html=True,
         )
 
-        # self.item_descr = st.text_area("Descriptions", key="descr", value=self.descr)
+        st.data_editor(
+            st.session_state.edit_material_df,
+            num_rows="dynamic",
+            width="stretch",
+            key="materials_editor",
+            column_config={
+                "Description": st.column_config.TextColumn("Description", width="large"),
+                "Unit price":  st.column_config.NumberColumn("Unit Price (R)", min_value=0, format="R %.2f"),
+                "Quantity":    st.column_config.NumberColumn("Qty", min_value=1),
+            },
+        )
 
-        # up, qty, tp = st.columns(3)
+        add_col, _ = st.columns([1, 3])
+        with add_col:
+            add_clicked = st.button("➕ Add to Items", type="primary", use_container_width=True)
 
-        # with up:
-        #     self.item_unit_price = st.number_input("Unit Price",format="%0.2f", min_value=0.00,value=float(self.unit_price), key="unit_price")
+        if add_clicked:
+            editor_state = st.session_state.get("materials_editor", {})
+            base_df = st.session_state.edit_material_df.copy()
 
-        # with qty:
-        #     self.item_qty = st.number_input("Quantity", min_value=1, key="qty", value=int(self.qty_value))
+            # Apply added rows
+            added_rows = editor_state.get("added_rows", [])
+            if added_rows:
+                base_df = pd.concat(
+                    [base_df, pd.DataFrame(added_rows, columns=base_df.columns)],
+                    ignore_index=True,
+                )
 
-        # if self.item_unit_price > 0 or self.item_qty > 1:
-        #     st.session_state.total_price = self.item_qty * self.item_unit_price
+            # Apply in-place edits
+            for row_idx, changes in editor_state.get("edited_rows", {}).items():
+                for col, val in changes.items():
+                    base_df.at[int(row_idx), col] = val
 
-        # with tp:
-        #     self.item_total_price = st.number_input("Total Price", format="%0.2f", key="total_price", disabled=True)
+            # Apply deletions
+            deleted = editor_state.get("deleted_rows", [])
+            base_df = base_df.drop(index=deleted).reset_index(drop=True)
 
-        # if st.button("**Update totals**"):
-        #     self.add_items(self.item_descr, self.item_unit_price, self.item_qty, self.item_total_price)
+            # Coerce + calculate Total amount
+            base_df["Unit price"] = pd.to_numeric(base_df["Unit price"], errors="coerce").fillna(0.0)
+            base_df["Quantity"]   = pd.to_numeric(base_df["Quantity"],   errors="coerce").fillna(1).astype(int)
+            base_df["Total amount"] = base_df["Unit price"] * base_df["Quantity"]
 
-        if not edited_df.empty:
-            edited_df["Total amount"] = edited_df["Unit price"] * edited_df["Quantity"]
+            valid_rows = base_df[
+                (base_df["Description"].notna()) &
+                (base_df["Description"].str.strip() != "") &
+                (base_df["Unit price"] > 0)
+            ]
 
-        st.session_state.edit_material_df = edited_df
-
-        st.session_state.material_df = st.session_state.edit_material_df.copy()
-
-        df = st.session_state.material_df.copy(deep=True)
-        df["Total amount"] = df["Total amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-        
-        df["Unit price"] = df["Unit price"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-        
-        if st.session_state.get("edit items"):
-            self.edit_items()
-
-        st.write("**List of items**")
-        st.table(df)
-        #I must work on this section
-        if len(st.session_state.material_df) > 0:
-            if st.button("Edit Items"):
-                st.session_state["edit items"] = True
-                st.session_state.edit_material_df = st.session_state.material_df.copy()
+            if st.session_state.get("custtype") is None:
+                st.warning("⚠️ Please select a customer type before adding items.")
+            elif valid_rows.empty:
+                st.warning("⚠️ Fill in at least one row with a Description and a Unit price greater than R 0.")
+            else:
+                st.session_state.material_df = pd.concat(
+                    [st.session_state.material_df, valid_rows],
+                    ignore_index=True,
+                )
+                st.session_state["current_status"] = "Reset"
                 st.rerun()
 
+        st.markdown("<hr style='border:1px solid #d1d5db; margin: 1rem 0;'>", unsafe_allow_html=True)
+
+        # ════════════════════════════════════════════════════════════════════
+        # SECTION 2 — LIST OF ITEMS (confirmed list)
+        # ════════════════════════════════════════════════════════════════════
+        item_count = len(st.session_state.material_df)
+        st.markdown(
+            f"<p style='font-size:1rem; font-weight:700; color:#1f2937; margin-bottom:0.2rem;'>"
+            f"🧾 LIST OF ITEMS "
+            f"<span style='font-weight:400; font-size:0.85rem; color:#6b7280;'>"
+            f"({item_count} item{'s' if item_count != 1 else ''})</span></p>",
+            unsafe_allow_html=True,
+        )
+
+        if item_count == 0:
+            st.info("No items added yet. Use the MATERIALS table above to add items.")
+        elif st.session_state.get("edit items"):
+            # ── Editable mode ───────────────────────────────────────────────
+            confirmed_edited = st.data_editor(
+                st.session_state.material_df,
+                num_rows="dynamic",
+                width="stretch",
+                key="edit_materials_editor",
+                column_config={
+                    "Description":  st.column_config.TextColumn("Description", width="large"),
+                    "Unit price":   st.column_config.NumberColumn("Unit Price (R)", min_value=0, format="R %.2f"),
+                    "Quantity":     st.column_config.NumberColumn("Qty", min_value=1),
+                    "Total amount": st.column_config.NumberColumn("Total (R)", disabled=True, format="R %.2f"),
+                },
+            )
+            confirmed_edited["Unit price"]   = pd.to_numeric(confirmed_edited["Unit price"],   errors="coerce").fillna(0.0)
+            confirmed_edited["Quantity"]     = pd.to_numeric(confirmed_edited["Quantity"],     errors="coerce").fillna(1).astype(int)
+            confirmed_edited["Total amount"] = confirmed_edited["Unit price"] * confirmed_edited["Quantity"]
+
+            save_col, cancel_col, _ = st.columns([1, 1, 3])
+            with save_col:
+                if st.button("💾 Save Changes", type="primary", use_container_width=True):
+                    st.session_state.material_df = confirmed_edited.copy()
+                    st.session_state["edit items"] = False
+                    st.rerun()
+            with cancel_col:
+                if st.button("✖ Cancel", use_container_width=True):
+                    st.session_state["edit items"] = False
+                    st.rerun()
+        else:
+            # ── Read-only display ────────────────────────────────────────────
+            display_df = st.session_state.material_df.copy(deep=True)
+            display_df["Unit price"]   = display_df["Unit price"].apply(lambda x: f"R {float(x):.2f}" if pd.notna(x) else x)
+            display_df["Total amount"] = display_df["Total amount"].apply(lambda x: f"R {float(x):.2f}" if pd.notna(x) else x)
+            st.dataframe(
+                display_df,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Description":  st.column_config.TextColumn("Description"),
+                    "Unit price":   st.column_config.TextColumn("Unit Price"),
+                    "Quantity":     st.column_config.NumberColumn("Qty"),
+                    "Total amount": st.column_config.TextColumn("Total"),
+                },
+            )
+
+            edit_col, _ = st.columns([1, 4])
+            with edit_col:
+                if st.button("✏️ Edit Items", use_container_width=True):
+                    st.session_state["edit items"] = True
+                    st.rerun()
+
+        st.markdown("<hr style='border:1px solid #d1d5db; margin: 1rem 0;'>", unsafe_allow_html=True)
+
+        # ════════════════════════════════════════════════════════════════════
+        # SECTION 3 — TOTALS
+        # ════════════════════════════════════════════════════════════════════
         self.sub_total = st.session_state.material_df["Total amount"].sum()
 
         left, right = st.columns(2, border=True)
         with left:
             self.additional_totals()
-
         with right:
             self.totals()
 
-    def edit_items(self):
 
-        edited_df = st.data_editor(
-            st.session_state.edit_material_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="materials_editor",
-            column_config={
-                "Unit price": st.column_config.NumberColumn(min_value=0),
-                "Quantity": st.column_config.NumberColumn(min_value=1),
-                "Total amount": st.column_config.NumberColumn(disabled=True),
-            }
-        )
-
-        if not edited_df.empty:
-            edited_df["Total amount"] = edited_df["Unit price"] * edited_df["Quantity"]
-
-        st.session_state.edit_material_df = edited_df
-#         for index, row in st.session_state.material_df.iterrows():
-#             description, unit_price, quantity, total_amount, delete = st.columns(5, border=False)
-# #"Description", "Unit price", "Quantity", "Total amount"
-#             with description:
-#                 st.text_area("Description",key="descr"+str(index), value=row['Description'])
-#             with unit_price:
-#                 st.text_input("Unit Price",key="unit_price_"+str(index), value=row["Unit price"])
-#             with quantity:
-#                 st.text_input("Qty", key="qty_"+str(index), value=row["Quantity"])
-#             with total_amount:
-#                 st.text_input("Total Amount", key="total_amount_"+str(index), value=row["Total amount"])
-#             with delete:
-#                 st.button("Delete...", key="delete_"+str(index))
-            
-
-        cancel, save = st.columns(2, border=False)
-        with cancel:
-            if st.button("Cancel"):
-                pass
-        with save:
-            if st.button("Save"):
-                pass
 
     def summary(self):
         st.divider()

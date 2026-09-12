@@ -4,100 +4,78 @@ from models.Qout_Manag_Model import *
 import webbrowser
 from models.User_Model import *
 
-# Single CSS injection via the shared helper – no inline block needed.
+abs_icon = open("Images/AbsAppIcon.png", "rb").read()
+st.set_page_config(
+    page_title="Manage Quotations | Absaluminum".upper(),
+    page_icon=abs_icon,
+    layout="wide",
+)
 inject_css()
 
-abs_icon = open("Images/AbsAppIcon.png", "rb").read()
-st.set_page_config(page_title="Absaluminum".upper(), page_icon=abs_icon)
-
-with st.sidebar:
-    st.header("Qoutation Navigation")
-    page = st.selectbox(
-        "Go to",
-        ["All Qoutations", "Edit Qoutations", "Waiting Qoutations", "Approved Qoutations", "Overdue Qoutations"]
-    )
-
-
-def qouteTable_1(df):
-    cols = st.columns([1, 2, 1, 1, 1, 1, 1, 1])
-    headers = [
-        "Invoice", "Client", "Paid", "Total",
-        "Outstanding", "Status", "Quote Doc", "PDF"
-    ]
-
-    for col, header in zip(cols, headers):
-        col.markdown(f"**{header}**")
-
-    for _, row in df.iterrows():
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 2, 1, 1, 1, 1, 1, 1])
-
-        c1.write(row["inv_numb"])
-        c2.write(row["inv_to"])
-        c3.write(row["payed_amount"])
-        c4.write(row["total_amount"])
-        c5.write(row["oust_amount"])
-        c6.write(row["status"])
-
-        # Use inv_numb as the unique key – qoute_id does not exist in this dataset.
-        if c7.button("Open Doc", key=f"doc_{row['inv_numb']}"):
-            webbrowser.open(row["qoute_doc"])
-
-        if c8.button("Open PDF", key=f"pdf_{row['inv_numb']}"):
-            webbrowser.open(row["qoute_pdf"])
 
 def qouteTable(df):
-    df = df.drop(columns=["qoute_doc"])
-    df["payed_amount"] = df["payed_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-    df["total_amount"] = df["total_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-    df["oust_amount"] = df["oust_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+    df = df.drop(columns=[c for c in ["qoute_doc"] if c in df.columns])
+    df["payed_amount"] = df["payed_amount"].apply(lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+    df["total_amount"] = df["total_amount"].apply(lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+    df["oust_amount"]  = df["oust_amount"].apply(lambda x: f"R {float(x):,.2f}"  if str(x).replace('.', '', 1).isdigit() else x)
     st.dataframe(
         df,
         hide_index=True,
+        width="stretch",
         column_config={
-            "inv_numb": st.column_config.TextColumn("Inv Number"),
-            "inv_to": st.column_config.TextColumn("Inv To"),
-            "payed_amount": st.column_config.TextColumn("Paid Amount (R)"),
-            "total_amount": st.column_config.TextColumn("Total Amount (R)"),
-            "oust_amount": st.column_config.TextColumn("Outstanding (R)"),
-            "status": st.column_config.TextColumn("Status"),
-            "qoute_pdf": st.column_config.LinkColumn(
-                "Quotation",
-                display_text="View Qoutation"
-            ),
-        }
+            "inv_numb":     st.column_config.TextColumn("Inv Number"),
+            "inv_to":       st.column_config.TextColumn("Inv To"),
+            "payed_amount": st.column_config.TextColumn("Paid (R)"),
+            "total_amount": st.column_config.TextColumn("Total (R)"),
+            "oust_amount":  st.column_config.TextColumn("Outstanding (R)"),
+            "status":       st.column_config.TextColumn("Status"),
+            "qoute_pdf":    st.column_config.LinkColumn("Quotation", display_text="View Quotation"),
+        },
     )
 
-def edit_qoutation():
-    edit_qout = Qoute_Manager()
-    edit_qout.set_qout_UI()
 
+def quotation_list():
+    hdr_col, refresh_col = st.columns([5, 1])
+    with hdr_col:
+        st.title("📋 Quotations")
+    with refresh_col:
+        st.write("")
+        if st.button("🔄 Refresh", use_container_width=True, key="qout_list_refresh"):
+            init_data()
+            st.session_state.loaded = True
+            st.rerun()
 
-def qoutation_list():
     if st.session_state.qouteSummary:
-        st.header("List of Qoutation")
+        # Summary stats in list view
+        all_q      = st.session_state.qouteSummary
+        waiting    = sum(1 for q in all_q if str(q.get('status', '')).lower() == 'waiting')
+        inprogress = sum(1 for q in all_q if str(q.get('status', '')).lower() == 'inprogress')
+        invoiced   = sum(1 for q in all_q if str(q.get('status', '')).lower() == 'invoiced')
+        c1, c2, c3 = st.columns(3)
+        with c1: st.metric("⏳ Waiting", waiting)
+        with c2: st.metric("🚧 In Progress", inprogress)
+        with c3: st.metric("✅ Invoiced", invoiced)
+        st.markdown("<hr style='border:1px solid #d1d5db; margin:0.5rem 0 1rem 0;'>", unsafe_allow_html=True)
+
         df = pd.DataFrame(st.session_state.qouteSummary)
         qouteTable(df=df)
     else:
-        st.header("There is no qoutations")
+        st.info("No quotations found.")
 
-#============================================================
+
+# ============================================================
 user = User()
 if user.get_user():
-    st.title("Qoutations")
-
     if "loaded" not in st.session_state:
         init_data()
         st.session_state.loaded = True
 
     if not st.session_state.get("edit_qoute", False):
-        qoutation_list()
-
-        if st.button("**More Options...**"):
+        quotation_list()
+        if st.button("⚙️ Manage Quotations"):
             st.session_state.edit_qoute = True
             st.session_state.qout_page = 0
             st.rerun()
-
     else:
-        edit_qoutation()
-
-
+        edit_qout = Qoute_Manager()
+        edit_qout.set_qout_UI()
