@@ -912,11 +912,13 @@ class Contract:
     
     def set_gui(self):
         st.write(f"Create New Rate for: {self.staff.get('full_names')}")
-        st.selectbox("Contract Type", options=['Daily Rate', 'Fixed Rate', 'Monthly Rate', 'Weekly Rate'], key='contract_type', index=None, placeholder='Select Contract')
-        st.number_input(label="Rate Amount", min_value=0.00, format="%0.2f", key='rate_amount')
+        st.selectbox("Rate Type", options=['Daily', 'Hourly', 'Monthly', 'Weekly', 'Per Job', 'Contract'], key='contract_type', index=None, placeholder='Select Rate Type')
+        st.number_input(label="Rate Amount (R)", min_value=0.00, format="%0.2f", key='rate_amount')
+        st.selectbox("Status", options=['Active', 'Completed', 'Suspended', 'Closed'], key='contract_status', index=0)
 
         self.cont_data['rate_type'] = st.session_state.contract_type
-        self.cont_data['amount'] = st.session_state.rate_amount
+        self.cont_data['amount']    = st.session_state.rate_amount
+        self.cont_data['status']    = st.session_state.contract_status
 
         col1, col2 = st.columns(2, border=False)
         with col2:
@@ -973,21 +975,37 @@ class StaffAttendence:
     def set_gui(self):
         st.write(f"**Attendentce Register for {self.staff.get('full_names')}**")
         staff_id = self.staff.get('user_id')
-        # st.write(self.st_rate)
-        rate_choice = st.radio(label='Select Rate', options=[f"{r.get('rate_type')} - R {r.get('amount')}" for r in self.st_rate])
+
+        if not self.st_rate:
+            st.warning(
+                f"⚠️ No contract/rate found for **{self.staff.get('full_names')}**. "
+                "Please add a contract on the Staff Summary tab before capturing attendance."
+            )
+            # Mark as invalid so capture_att() knows to skip this staff member
+            self.rate_data['_no_rate'] = True
+            return
+
+        # Build a display label → rate record mapping so the selected label
+        # resolves to the correct rate_id (fixes the always-index-0 bug).
+        rate_labels = [f"{r.get('rate_type')} - R {r.get('amount')}" for r in self.st_rate]
+        rate_map    = {f"{r.get('rate_type')} - R {r.get('amount')}": r for r in self.st_rate}
+
+        rate_choice = st.radio(label='Select Rate', options=rate_labels, key=f"rate_choice_{staff_id}")
+
         d_col, h_col, s_col = st.columns(3, border=False)
-        # st.date_input("Inv Date", datetime.today(), format="DD-MM-YYYY", key="date")
         with d_col:
             st.date_input("Captured Date", datetime.today(), format="DD-MM-YYYY", key=f"capt_date_{staff_id}")
         with h_col:
             st.number_input("Total Hours", min_value=1, key=f"tot_hours_{staff_id}", value=int(8), max_value=24)
         with s_col:
             st.selectbox(label='Status', options=['Paid', 'Unpaid'], index=1, key=f'status_choice_{staff_id}')
-        
-        self.rate_data['att_date'] = st.session_state.get(f"capt_date_{staff_id}").isoformat()
-        self.rate_data['status'] = st.session_state.get(f'status_choice_{staff_id}')
+
+        selected_rate = rate_map.get(rate_choice, self.st_rate[0])
+        self.rate_data['att_date']     = st.session_state.get(f"capt_date_{staff_id}").isoformat()
+        self.rate_data['status']       = st.session_state.get(f'status_choice_{staff_id}')
         self.rate_data['hours_worked'] = st.session_state.get(f"tot_hours_{staff_id}")
-        self.rate_data['rate_id'] = self.st_rate[0].get('rate_id')
+        self.rate_data['rate_id']      = selected_rate.get('rate_id')
+        self.rate_data.pop('_no_rate', None)  # clear any previous no-rate flag
 
     def get_rate(self):
         s_rate = []
@@ -997,8 +1015,11 @@ class StaffAttendence:
         return s_rate
     
     def capture_att(self):
-        print(self.rate_data)
-        response = supabase.table('StaffAttendance').insert(self.rate_data).execute()
+        if self.rate_data.get('_no_rate'):
+            raise ValueError(f"No contract rate found for {self.staff.get('full_names')} — skipped.")
+        payload = {k: v for k, v in self.rate_data.items() if k != '_no_rate'}
+        print(payload)
+        supabase.table('StaffAttendance').insert(payload).execute()
 
     def get_days(self):
         att_list = []
