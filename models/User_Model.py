@@ -33,7 +33,13 @@ class User:
                     }
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Login failed: {e}")
+                    err_str = str(e).lower()
+                    if "invalid login credentials" in err_str or "invalid_credentials" in err_str:
+                        st.error("❌ Incorrect password. Please try again.")
+                    elif "jwt expired" in err_str or "pgrst303" in err_str:
+                        st.error("❌ The server connection has expired. Please contact your administrator.")
+                    else:
+                        st.error("❌ Login failed. Please check your credentials and try again.")
 
     def logout(self):
         """Sign out from Supabase and clear the local session."""

@@ -48,7 +48,7 @@ if not st.session_state.get("user"):
                         .execute()
                     )
                     if not user_details.data:
-                        st.error("Username not found.")
+                        st.error("❌ Username not found.")
                     else:
                         supabase.auth.sign_in_with_password({
                             "email":    user_details.data[0].get("email"),
@@ -60,7 +60,17 @@ if not st.session_state.get("user"):
                         }
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Login failed: {e}")
+                    err_str = str(e).lower()
+                    if "invalid login credentials" in err_str or "invalid_credentials" in err_str:
+                        st.error("❌ Incorrect password. Please try again.")
+                    elif "jwt expired" in err_str or "pgrst303" in err_str:
+                        st.error("❌ The server connection has expired. Please contact your administrator to refresh the API credentials.")
+                    elif "email not confirmed" in err_str:
+                        st.error("❌ This account's email has not been confirmed. Please contact your administrator.")
+                    elif "user not found" in err_str:
+                        st.error("❌ Username not found.")
+                    else:
+                        st.error("❌ Login failed. Please check your credentials and try again.")
 
     st.stop()
 

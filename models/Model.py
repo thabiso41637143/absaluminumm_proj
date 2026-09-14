@@ -12,7 +12,28 @@ import os
 
 load_dotenv()
 
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+def _get_supabase():
+    """
+    Return a Supabase client that is scoped to the current Streamlit session.
+    Creating it once per session (instead of once at module import) prevents
+    the JWT-expired error on long-running deployments like Streamlit Cloud,
+    where the module-level client would go stale without the process restarting.
+    """
+    if "supabase_client" not in st.session_state:
+        st.session_state.supabase_client = create_client(
+            os.getenv("SUPABASE_URL"),
+            os.getenv("SUPABASE_KEY"),
+        )
+    return st.session_state.supabase_client
+
+# Module-level proxy — all existing code that does `supabase.table(...)` keeps
+# working without any changes elsewhere in the codebase.
+class _SupabaseProxy:
+    """Thin proxy that forwards every attribute access to the per-session client."""
+    def __getattr__(self, name):
+        return getattr(_get_supabase(), name)
+
+supabase = _SupabaseProxy()
 
 # ---------------------------------------------------------------------------
 # Shared CSS – call inject_css() once per page instead of duplicating the
