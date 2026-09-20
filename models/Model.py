@@ -46,9 +46,16 @@ _CSS = """
     background-color: #e4ebed;
     font-family: "Segoe UI", sans-serif;
 }
+/* ---------- BASE TEXT (stronger contrast for readability) ---------- */
+.stApp, .stApp p, .stApp li, .stApp label, .stApp span, .stMarkdown {
+    color: #1f2937;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
 /* ---------- HEADERS ---------- */
 h1, h2, h3 {
-    color: #1f2937;
+    color: #111827;
     font-weight: 600;
 }
 /* ---------- CARDS ---------- */
@@ -84,6 +91,58 @@ h1, h2, h3 {
 .stRadio > label, .stSelectbox > label {
     font-weight: 500;
     color: #374151;
+}
+
+/* ==========================================================================
+   MOBILE / SMALL-SCREEN OVERRIDES
+   Streamlit shrinks type and cramps padding on narrow viewports. These rules
+   only apply at <= 640px so the desktop layout is unchanged.
+   ========================================================================== */
+@media (max-width: 640px) {
+    /* Give the app breathing room and a readable base size */
+    html, body, .stApp {
+        font-size: 17px;      /* base bumped up from browser default ~14-16px */
+    }
+    /* Tighten the default top/side padding so content isn't squeezed */
+    .block-container {
+        padding-top: 1rem !important;
+        padding-left: 0.9rem !important;
+        padding-right: 0.9rem !important;
+    }
+    /* Body copy — larger and higher contrast */
+    .stApp p, .stApp li, .stApp label, .stMarkdown, .stApp span {
+        font-size: 1.02rem !important;
+        line-height: 1.5 !important;
+        color: #1f2937 !important;
+    }
+    /* Headings scaled for small screens (still clearly hierarchical) */
+    h1 { font-size: 1.6rem !important; }
+    h2 { font-size: 1.35rem !important; }
+    h3 { font-size: 1.15rem !important; }
+    /* Inputs: bigger text + 16px minimum stops iOS Safari auto-zooming on focus */
+    .stTextInput input,
+    .stNumberInput input,
+    .stDateInput input,
+    .stSelectbox div[data-baseweb="select"] {
+        font-size: 16px !important;
+    }
+    /* Buttons: full-height tap targets and readable label */
+    .stButton > button {
+        font-size: 1rem !important;
+        padding: 0.65rem 1rem !important;
+    }
+    /* Metrics (KPI numbers on the dashboard) — keep them legible, not huge */
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.9rem !important;
+    }
+    /* Dataframes/tables: allow horizontal scroll instead of crushing columns */
+    [data-testid="stDataFrame"] {
+        font-size: 0.9rem !important;
+        overflow-x: auto !important;
+    }
 }
 </style>
 """
