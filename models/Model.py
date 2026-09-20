@@ -208,6 +208,9 @@ def init_att_reg():
 def init_loans():
     st.session_state.init_loans = supabase.table('StaffLoans').select('*').execute().data
 
+def init_payments():
+    st.session_state.init_payments = supabase.table('StaffPayment').select('*').execute().data
+
 #Invoice Qoutation class
 class InvQouteUI:
     def __init__(self, invQouteUrl = None, tax_rate = 0.15, deposite_rate = 0.7):
@@ -920,6 +923,7 @@ class AbsStaff:
         self.att_reg = StaffAttendence(staff=self.abs_user)
         self.contract = Contract(staff=self.abs_user)
         self.loans = Loans(staff=self.abs_user)
+        self.payments = StaffPayment(staff=self.abs_user)
 
     def get_profile(self):
         return f"""**Staff ID:** {self.abs_user.get('user_id')}
@@ -968,10 +972,22 @@ class AbsStaff:
         outstanding = self.loans.get_total_outstanding()
         net_salary  = total_salary - outstanding
 
+        # total_days here counts only UNPAID days (paid days are historic and
+        # excluded from the salary calc above).
+        if total_days == 0 and total_salary == 0:
+            base = (
+                "\n✅ **No unpaid days pending.** All worked days have been paid.\n\n"
+                "*Click 📅 Days to view the full history.*\n"
+            )
+            if outstanding > 0:
+                base += f"\n⚠️ **Outstanding loan: −R {outstanding:,.2f}**\n"
+            return base
+
         summary = (
-            f"\n**Total days attended:** {total_days}\n\n"
+            f"\n**Unpaid days pending payment:** {total_days}  \n"
+            f"*Paid days are historic — click 📅 Days to view them.*\n\n"
             f"{table}\n\n"
-            f"**Gross salary: R {total_salary:,.2f}**\n"
+            f"**Gross salary due: R {total_salary:,.2f}**\n"
         )
         if outstanding > 0:
             summary += (
@@ -979,6 +995,12 @@ class AbsStaff:
                 f"**Net payable: R {net_salary:,.2f}**\n"
             )
         return summary
+
+    def get_pay_figures(self):
+        """Convenience: (gross_salary, outstanding_loan) for the pay form."""
+        _, _, gross = self.contract.salary_breakdown()
+        outstanding = self.loans.get_total_outstanding()
+        return gross, outstanding
 
     def get_staff_dates(self):
         return f"No dates found"
@@ -1005,6 +1027,9 @@ class Users:
 
         if not 'init_loans' in st.session_state:
             init_loans()
+
+        if not 'init_payments' in st.session_state:
+            init_payments()
     
     def print_details(self):
         st.write(st.session_state.int_users)
@@ -1121,13 +1146,21 @@ class Contract:
                 s_rate.append(r)
         return s_rate
 
-    def _attendance_for_rate(self, rate_id):
-        """All attendance rows this staff member logged against a specific rate."""
-        return [
+    def _attendance_for_rate(self, rate_id, unpaid_only=True):
+        """Attendance rows this staff member logged against a specific rate.
+
+        For salary we only count UNPAID days: once a payment has been made the
+        worked days are marked 'Paid' and stop contributing to the summary /
+        next salary (they remain visible under the Days button as history).
+        """
+        rows = [
             a for a in st.session_state.get('init_att_register', [])
             if a.get('staff_id') == self.staff.get('user_id')
             and a.get('rate_id') == rate_id
         ]
+        if unpaid_only:
+            rows = [a for a in rows if str(a.get('status', '')).strip().lower() != 'paid']
+        return rows
 
     def calc_rate_earnings(self, rate):
         """
@@ -1355,6 +1388,25 @@ class StaffAttendence:
         print(payload)
         supabase.table('StaffAttendance').insert(payload).execute()
 
+    def get_unpaid_days(self):
+        """Attendance rows for this staff member not yet marked as Paid."""
+        return [a for a in self.get_days()
+                if str(a.get('status', '')).strip().lower() != 'paid']
+
+    def mark_all_paid(self):
+        """Mark every currently-unpaid attendance row for this staff member as
+        Paid. Called after a payment so those days become historic and stop
+        counting toward the summary / next salary. Returns the count updated."""
+        unpaid = self.get_unpaid_days()
+        if not unpaid:
+            return 0
+        supabase.table('StaffAttendance').update({'status': 'Paid'})\
+            .eq('staff_id', self.staff.get('user_id'))\
+            .neq('status', 'Paid')\
+            .execute()
+        init_att_reg()
+        return len(unpaid)
+
     def get_days(self):
         att_list = []
         for att in st.session_state.init_att_register:
@@ -1505,3 +1557,110 @@ class Loans:
     def delete_loan(self, loan_id):
         supabase.table("StaffLoans").delete().eq("loan_id", loan_id).execute()
         init_loans()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staff payments / payslips
+# ─────────────────────────────────────────────────────────────────────────────
+class StaffPayment:
+    """Record and review payments made to a staff member.
+
+    A payment stores the full money breakdown so a payslip can be
+    reconstructed later:
+        net_amount = gross_amount - loan_deduction - other_deduction
+    Recording a payment also pushes the loan_deduction through
+    Loans.record_payment() so the loan balance stays in sync.
+    """
+
+    def __init__(self, staff):
+        self.staff = staff
+        self.loans = Loans(staff=staff)
+
+    # ── Reads ────────────────────────────────────────────────────────────
+    def get_payments(self):
+        """All payment rows for this staff member (most recent first)."""
+        pays = [
+            p for p in st.session_state.get('init_payments', [])
+            if p.get('staff_id') == self.staff.get('user_id')
+        ]
+        return sorted(pays, key=lambda p: str(p.get('pay_date', '')), reverse=True)
+
+    def get_total_paid(self):
+        total = 0.0
+        for p in self.get_payments():
+            try:
+                total += float(p.get('net_amount', 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    # ── Writes ───────────────────────────────────────────────────────────
+    def create_payment(self, pay_date, gross_amount, loan_deduction=0.0,
+                        other_deduction=0.0, method="Cash", status="Paid",
+                        period_start=None, period_end=None, notes=None):
+        """Insert a payment and settle the loan portion.
+
+        Returns the inserted payment row (dict) so the caller can, e.g., pass
+        it to a payslip generator.
+        """
+        gross = float(gross_amount or 0)
+        loan  = max(float(loan_deduction or 0), 0.0)
+        other = max(float(other_deduction or 0), 0.0)
+
+        # Never let loan repayment exceed what is actually owed.
+        outstanding = self.loans.get_total_outstanding()
+        loan = min(loan, outstanding)
+
+        net = gross - loan - other
+
+        def _iso(d):
+            return d.isoformat() if hasattr(d, 'isoformat') else (d or None)
+
+        payload = {
+            "staff_id":        self.staff.get('user_id'),
+            "pay_date":        _iso(pay_date),
+            "period_start":    _iso(period_start),
+            "period_end":      _iso(period_end),
+            "gross_amount":    gross,
+            "loan_deduction":  loan,
+            "other_deduction": other,
+            "net_amount":      net,
+            "method":          method,
+            "status":          status,
+            "pay_doc":         "",
+            "pay_pdf":         "",
+            "notes":           (notes or "").strip() or None,
+        }
+
+        result = supabase.table("StaffPayment").insert(payload).execute()
+
+        # Apply the loan repayment portion across outstanding loans (oldest first).
+        if loan > 0:
+            self._apply_loan_repayment(loan)
+
+        # Mark all currently-unpaid worked days as Paid so they become historic
+        # and no longer count toward the summary / next salary.
+        try:
+            StaffAttendence(staff=self.staff).mark_all_paid()
+        except Exception as e:
+            print(f"[create_payment] mark_all_paid failed: {e}")
+
+        init_payments()
+        return (result.data or [payload])[0]
+
+    def _apply_loan_repayment(self, amount):
+        """Distribute a repayment across the staff member's outstanding loans,
+        oldest first, using the existing Loans.record_payment logic."""
+        remaining = float(amount or 0)
+        # Oldest first so the longest-standing debt is cleared first.
+        loans_oldest = sorted(
+            [l for l in self.loans.get_loans() if float(l.get('out_amount', 0) or 0) > 0],
+            key=lambda l: str(l.get('loan_date', '')),
+        )
+        for loan in loans_oldest:
+            if remaining <= 0:
+                break
+            owed = float(loan.get('out_amount', 0) or 0)
+            pay  = min(owed, remaining)
+            self.loans.record_payment(loan.get('loan_id'), pay)
+            remaining -= pay

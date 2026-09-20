@@ -1,5 +1,5 @@
 import streamlit as st
-from models.Model import AbsStaff, Contract, StaffAttendence, Users, inject_css, supabase, init_users, init_staff_rate, init_att_reg, init_loans
+from models.Model import AbsStaff, Contract, StaffAttendence, Users, inject_css, supabase, init_users, init_staff_rate, init_att_reg, init_loans, init_payments
 from models.User_Model import *
 import time
 from datetime import date
@@ -35,7 +35,9 @@ def _delete_staff(user_id: str, full_names: str):
     """Delete a staff member and all their related records from Supabase,
     then refresh the in-session caches so the card disappears immediately."""
     try:
-        # Delete child records first to respect foreign key constraints
+        # Delete child records first to respect foreign key constraints.
+        # StaffPayment.staff_id is ON DELETE SET NULL, so payment history is
+        # preserved (staff_id becomes NULL) rather than deleted.
         supabase.table("StaffLoans").delete().eq("staff_id", user_id).execute()
         supabase.table("StaffAttendance").delete().eq("staff_id", user_id).execute()
         supabase.table("StaffRates").delete().eq("staff_id", user_id).execute()
@@ -46,6 +48,7 @@ def _delete_staff(user_id: str, full_names: str):
         init_staff_rate()
         init_att_reg()
         init_loans()
+        init_payments()
 
         st.success(f"✅ **{full_names}** (`{user_id}`) has been deleted.")
         time.sleep(0.5)   # let the socket close cleanly before rerun
@@ -148,6 +151,126 @@ def _render_loans_panel(abs_user, uid):
                 st.rerun()
 
 
+def _render_pay_panel(abs_user, uid):
+    """Record a payment. Pre-fills gross salary + full outstanding loan
+    (both overridable — option C), computes net, and settles the loan portion."""
+    gross, outstanding = abs_user.get_pay_figures()
+
+    st.markdown(
+        f"<p style='color:#6b7280; font-size:0.88rem;'>"
+        f"Computed gross salary (Active agreements): <b>R {gross:,.2f}</b>. "
+        f"Outstanding loans: <b>R {outstanding:,.2f}</b>.</p>",
+        unsafe_allow_html=True,
+    )
+
+    with st.form(f"pay_form_{uid}", clear_on_submit=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            pay_date = st.date_input("Payment Date", value=date.today(), format="DD-MM-YYYY")
+            gross_amount = st.number_input(
+                "Gross Amount (R)", min_value=0.00, value=float(round(gross, 2)), format="%0.2f",
+                help="Pre-filled from Active agreements; override if needed.",
+            )
+            method = st.selectbox("Payment Method", ["Cash", "EFT", "Cheque", "Other"], index=0)
+        with c2:
+            # Option C: pre-fill full outstanding, but user can override.
+            loan_deduction = st.number_input(
+                "Loan Deduction (R)", min_value=0.00,
+                value=float(round(min(outstanding, gross), 2)),
+                max_value=float(round(outstanding, 2)) if outstanding > 0 else 0.00,
+                format="%0.2f",
+                help="Pre-filled with the full outstanding loan; reduce if paying less.",
+            )
+            other_deduction = st.number_input(
+                "Other Deduction (R)", min_value=0.00, value=0.00, format="%0.2f",
+                help="Optional — e.g. damages, uniform.",
+            )
+            status = st.selectbox("Status", ["Paid", "Pending", "Cancelled"], index=0)
+
+        # Optional pay period
+        with st.expander("📆 Pay period (optional)"):
+            p1, p2 = st.columns(2)
+            with p1:
+                period_start = st.date_input("Period Start", value=None, format="DD-MM-YYYY", key=f"ps_{uid}")
+            with p2:
+                period_end = st.date_input("Period End", value=None, format="DD-MM-YYYY", key=f"pe_{uid}")
+
+        notes = st.text_input("Notes", placeholder="Optional")
+
+        net_preview = gross_amount - loan_deduction - other_deduction
+        st.markdown(
+            f"<div style='background:#eef2ff; padding:8px 12px; border-radius:8px;'>"
+            f"<b>Net to pay: R {net_preview:,.2f}</b>  "
+            f"<span style='color:#6b7280;'>(Gross R {gross_amount:,.2f} "
+            f"− Loan R {loan_deduction:,.2f} − Other R {other_deduction:,.2f})</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        submitted = st.form_submit_button("💵 Record Payment", type="primary", use_container_width=True)
+
+    if submitted:
+        if gross_amount <= 0:
+            st.error("Gross amount must be greater than R 0.00.")
+            return
+        if net_preview < 0:
+            st.error("Deductions exceed the gross amount — net payment would be negative.")
+            return
+        abs_user.payments.create_payment(
+            pay_date=pay_date,
+            gross_amount=gross_amount,
+            loan_deduction=loan_deduction,
+            other_deduction=other_deduction,
+            method=method,
+            status=status,
+            period_start=period_start,
+            period_end=period_end,
+            notes=notes,
+        )
+        st.success(
+            f"✅ Payment of R {net_preview:,.2f} recorded"
+            + (f" (R {loan_deduction:,.2f} applied to loans)." if loan_deduction > 0 else ".")
+        )
+        st.rerun()
+
+
+def _render_payment_history(abs_user, uid):
+    """Show all payments made to the staff member, with payslip links."""
+    payments = abs_user.payments.get_payments()
+    if not payments:
+        st.info("No payments recorded for this staff member yet.")
+        return
+
+    st.metric("Total paid to date", f"R {abs_user.payments.get_total_paid():,.2f}")
+
+    for p in payments:
+        with st.container(border=True):
+            st.markdown(
+                f"**📅 {p.get('pay_date', '—')}**  ·  "
+                f"Net **R {float(p.get('net_amount', 0) or 0):,.2f}**  ·  "
+                f"{p.get('method', '—')}  ·  _{p.get('status', '—')}_"
+            )
+            st.caption(
+                f"Gross R {float(p.get('gross_amount', 0) or 0):,.2f} "
+                f"− Loan R {float(p.get('loan_deduction', 0) or 0):,.2f} "
+                f"− Other R {float(p.get('other_deduction', 0) or 0):,.2f}"
+            )
+            if p.get("period_start") or p.get("period_end"):
+                st.caption(f"Period: {p.get('period_start', '—')} → {p.get('period_end', '—')}")
+            if p.get("notes"):
+                st.caption(f"📝 {p.get('notes')}")
+
+            # Payslip document links (populated later by the Google Script)
+            links = []
+            if p.get("pay_pdf"):
+                links.append(f"[📄 View PDF]({p.get('pay_pdf')})")
+            if p.get("pay_doc"):
+                links.append(f"[📝 View Doc]({p.get('pay_doc')})")
+            if links:
+                st.markdown("  ·  ".join(links))
+            else:
+                st.caption("🧾 Payslip not generated yet.")
+
+
 def _render_staff_card(user: dict):
     abs_user   = AbsStaff(abs_user=user)
     staff_cont = Contract(staff=user)
@@ -179,19 +302,25 @@ def _render_staff_card(user: dict):
         except Exception as e:
             st.warning(f"Could not load summary: {e}")
 
-        # ── Action buttons ────────────────────────────────────────────────
-        b1, b2, b3, b4, b5, b6 = st.columns(6)
-        with b1:
+        # ── Action buttons (two rows) ─────────────────────────────────────
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1:
             st.button("📅 Days",       key=f"{uid}_view_days",    use_container_width=True)
-        with b2:
+        with r1c2:
             st.button("📋 Agreements", key=f"{uid}_agreements",   use_container_width=True)
-        with b3:
+        with r1c3:
             st.button("➕ Add Rate",   key=f"{uid}_contract",     use_container_width=True)
-        with b4:
+        with r1c4:
             st.button("👤 Profile",    key=f"{uid}_view_profile", use_container_width=True)
-        with b5:
+
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
             st.button("💰 Loans",      key=f"{uid}_view_loans",   use_container_width=True)
-        with b6:
+        with r2c2:
+            st.button("💵 Pay",        key=f"{uid}_pay",          use_container_width=True)
+        with r2c3:
+            st.button("🧾 Payslips",   key=f"{uid}_payhist",      use_container_width=True)
+        with r2c4:
             st.button("🗑️ Delete",     key=f"{uid}_delete",       use_container_width=True, type="primary")
 
         # Track which panel to keep open across reruns
@@ -258,6 +387,36 @@ def _render_staff_card(user: dict):
                 st.error(f"Could not load loans: {e}")
             if st.button("✖ Close Loans", key=f"{uid}_loans_close", use_container_width=True):
                 st.session_state[f"{uid}_loans_open"] = False
+                st.rerun()
+
+        # ── Pay Staff: persistent flag so the save rerun keeps the panel open.
+        if st.session_state.get(f"{uid}_pay"):
+            st.session_state[f"{uid}_pay_open"] = True
+
+        if st.session_state.get(f"{uid}_pay_open"):
+            st.session_state.contract_updates = None
+            _panel_header("💵 Pay Staff Member")
+            try:
+                _render_pay_panel(abs_user, uid)
+            except Exception as e:
+                st.error(f"Could not load pay form: {e}")
+            if st.button("✖ Close Pay", key=f"{uid}_pay_close", use_container_width=True):
+                st.session_state[f"{uid}_pay_open"] = False
+                st.rerun()
+
+        # ── Payment history (payslips) ────────────────────────────────────
+        if st.session_state.get(f"{uid}_payhist"):
+            st.session_state[f"{uid}_payhist_open"] = True
+
+        if st.session_state.get(f"{uid}_payhist_open"):
+            st.session_state.contract_updates = None
+            _panel_header("🧾 Payment History")
+            try:
+                _render_payment_history(abs_user, uid)
+            except Exception as e:
+                st.error(f"Could not load payment history: {e}")
+            if st.button("✖ Close History", key=f"{uid}_payhist_close", use_container_width=True):
+                st.session_state[f"{uid}_payhist_open"] = False
                 st.rerun()
 
         # ── Delete: use a persistent flag so the confirmation panel survives
