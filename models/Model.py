@@ -205,6 +205,9 @@ def init_staff_rate():
 def init_att_reg():
     st.session_state.init_att_register = supabase.table('StaffAttendance').select('*').execute().data
 
+def init_loans():
+    st.session_state.init_loans = supabase.table('StaffLoans').select('*').execute().data
+
 #Invoice Qoutation class
 class InvQouteUI:
     def __init__(self, invQouteUrl = None, tax_rate = 0.15, deposite_rate = 0.7):
@@ -915,6 +918,8 @@ class AbsStaff:
     def __init__(self, abs_user):
         self.abs_user = abs_user
         self.att_reg = StaffAttendence(staff=self.abs_user)
+        self.contract = Contract(staff=self.abs_user)
+        self.loans = Loans(staff=self.abs_user)
 
     def get_profile(self):
         return f"""**Staff ID:** {self.abs_user.get('user_id')}
@@ -923,12 +928,57 @@ class AbsStaff:
     \n**Residential Address:** {self.abs_user.get('home_location')}
     \n**Company Name:** {self.abs_user.get('work_location')}
     """
-    
+
     def get_summary(self):
-        return f"""
-\nSalary: R
-\nTotal number of days: {int(self.att_reg.get_tot_days())}
-\n"""
+        """
+        Markdown summary: total days attended and salary, broken down by each
+        rate/contract the staff member has used, plus a grand total.
+        """
+        rows, total_days, total_salary = self.contract.salary_breakdown()
+
+        if not rows:
+            base = (
+                f"\n**Total days attended:** {int(self.att_reg.get_tot_days())}"
+                f"\n\n**Salary:** R 0.00  \n*No active contract/rate set up yet.*\n"
+            )
+            outstanding = self.loans.get_total_outstanding()
+            if outstanding > 0:
+                base += f"\n⚠️ **Outstanding loan: −R {outstanding:,.2f}**\n"
+            return base
+
+        lines = ["| Rate / Job | Basis | Days | Hours | Salary |",
+                 "|---|---|---:|---:|---:|"]
+        for r in rows:
+            label = r['rate_type'] or "—"
+            if r.get('description') and r['rate_type'] in ('Per Job', 'Contract'):
+                label = f"{r['rate_type']}: {r['description']}"
+            rtype = str(r['rate_type'] or '').lower()
+            if rtype == 'daily':
+                basis = f"R {float(r['amount'] or 0):.2f}/day"
+            elif rtype == 'hourly':
+                basis = f"R {float(r['amount'] or 0):.2f}/hr"
+            else:
+                basis = f"R {float(r['amount'] or 0):.2f} fixed"
+            lines.append(
+                f"| {label} | {basis} | {r['days']} | {r['hours']:.0f} | R {r['salary']:.2f} |"
+            )
+        table = "\n".join(lines)
+
+        # Outstanding loans reduce the payable salary.
+        outstanding = self.loans.get_total_outstanding()
+        net_salary  = total_salary - outstanding
+
+        summary = (
+            f"\n**Total days attended:** {total_days}\n\n"
+            f"{table}\n\n"
+            f"**Gross salary: R {total_salary:,.2f}**\n"
+        )
+        if outstanding > 0:
+            summary += (
+                f"\n⚠️ **Outstanding loan: −R {outstanding:,.2f}**\n\n"
+                f"**Net payable: R {net_salary:,.2f}**\n"
+            )
+        return summary
 
     def get_staff_dates(self):
         return f"No dates found"
@@ -952,6 +1002,9 @@ class Users:
 
         if not 'init_att_register' in st.session_state:
             init_att_reg()
+
+        if not 'init_loans' in st.session_state:
+            init_loans()
     
     def print_details(self):
         st.write(st.session_state.int_users)
@@ -991,34 +1044,75 @@ class Contract:
         self.cont_data = {'staff_id': self.staff.get('user_id'), 'status': 'Active'}
     
     def set_gui(self):
+        staff_id = self.staff.get('user_id')
         st.write(f"Create New Rate for: {self.staff.get('full_names')}")
-        st.selectbox("Rate Type", options=['Daily', 'Hourly', 'Monthly', 'Weekly', 'Per Job', 'Contract'], key='contract_type', index=None, placeholder='Select Rate Type')
-        st.number_input(label="Rate Amount (R)", min_value=0.00, format="%0.2f", key='rate_amount')
-        st.selectbox("Status", options=['Active', 'Completed', 'Suspended', 'Closed'], key='contract_status', index=0)
+        rate_type = st.selectbox(
+            "Rate Type",
+            options=['Daily', 'Hourly', 'Monthly', 'Weekly', 'Per Job', 'Contract'],
+            key=f'contract_type_{staff_id}', index=None, placeholder='Select Rate Type'
+        )
 
-        self.cont_data['rate_type'] = st.session_state.contract_type
-        self.cont_data['amount']    = st.session_state.rate_amount
-        self.cont_data['status']    = st.session_state.contract_status
+        # ── Per Job / Contract need an identifier so multiple concurrent
+        #    jobs/contracts for the same staff member can be told apart. ──
+        description = None
+        if rate_type == 'Per Job':
+            description = st.text_input(
+                "Job Name / Reference",
+                key=f'contract_desc_{staff_id}',
+                placeholder="e.g. Kitchen windows – 12 Main St",
+            )
+            st.caption("Identifies this specific job when capturing attendance.")
+        elif rate_type == 'Contract':
+            description = st.text_input(
+                "Contract Link / Reference",
+                key=f'contract_desc_{staff_id}',
+                placeholder="e.g. https://... or CONTRACT-2026-014",
+            )
+            st.caption("The staff contract link or reference number.")
+
+        amount = st.number_input(
+            label="Rate Amount (R)", min_value=0.00, format="%0.2f",
+            key=f'rate_amount_{staff_id}',
+        )
+        status = st.selectbox(
+            "Status", options=['Active', 'Completed', 'Paused', 'Suspended', 'Closed'],
+            key=f'contract_status_{staff_id}', index=0,
+        )
+
+        self.cont_data['rate_type']   = rate_type
+        self.cont_data['amount']      = amount
+        self.cont_data['status']      = status
+        self.cont_data['description'] = (description or "").strip() or None
 
         col1, col2 = st.columns(2, border=False)
         with col2:
-            if st.button("Save Contract"):
+            if st.button("Save Contract", key=f"save_contract_{staff_id}"):
                 self.create_contract()
         with col1:
-            if st.button("Cancel"):
+            if st.button("Cancel", key=f"cancel_contract_{staff_id}"):
                 st.session_state.contract_updates = None
-                st.rerun()            
+                st.rerun()
 
     def create_contract(self):
-        if self.validate_cont():
-            response = supabase.table("StaffRates").insert(self.cont_data).execute()
+        ok, msg = self.validate_cont()
+        if ok:
+            supabase.table("StaffRates").insert(self.cont_data).execute()
+            init_staff_rate()  # refresh cache so the new rate shows immediately
             st.session_state.contract_updates = None
-            st.write("Successfully Created a contract.")
+            st.success("✅ Successfully created a contract.")
         else:
-            st.write("Uable to create a contract.")
-    
+            st.error(f"❌ {msg}")
+
     def validate_cont(self):
-        return True
+        rt = self.cont_data.get('rate_type')
+        if not rt:
+            return False, "Please select a rate type."
+        if not self.cont_data.get('amount') or self.cont_data['amount'] <= 0:
+            return False, "Rate amount must be greater than R 0.00."
+        if rt in ('Per Job', 'Contract') and not self.cont_data.get('description'):
+            label = "job name" if rt == 'Per Job' else "contract link"
+            return False, f"Please provide a {label} for this {rt} rate."
+        return True, ""
     
     def get_user_rate(self):
         s_rate = []
@@ -1027,24 +1121,173 @@ class Contract:
                 s_rate.append(r)
         return s_rate
 
+    def _attendance_for_rate(self, rate_id):
+        """All attendance rows this staff member logged against a specific rate."""
+        return [
+            a for a in st.session_state.get('init_att_register', [])
+            if a.get('staff_id') == self.staff.get('user_id')
+            and a.get('rate_id') == rate_id
+        ]
+
+    def calc_rate_earnings(self, rate):
+        """
+        Return (days, hours, salary) earned under a single rate row, following
+        the rules for each rate type:
+          Daily    -> amount * number of days worked
+          Hourly   -> amount * total hours captured
+          Monthly  -> fixed amount (paid once attendance exists)
+          Per Job  -> fixed amount for that job
+          Contract -> fixed amount for that contract
+        """
+        att   = self._attendance_for_rate(rate.get('rate_id'))
+        days  = len(att)
+        hours = sum(float(a.get('hours_worked', 0) or 0) for a in att)
+        try:
+            amount = float(rate.get('amount', 0) or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+
+        rtype = str(rate.get('rate_type', '')).strip().lower()
+        if rtype == 'daily':
+            salary = amount * days
+        elif rtype == 'hourly':
+            salary = amount * hours
+        elif rtype in ('monthly', 'weekly', 'per job', 'contract'):
+            # Fixed rates: considered earned once there is at least one
+            # attendance record logged against them.
+            salary = amount if days > 0 else 0.0
+        else:
+            salary = 0.0
+
+        return days, hours, salary
+
+    def get_active_rates(self):
+        """Only Active rates count toward staff salary. Non-active rates are
+        kept for history but are never used to pay a staff member."""
+        return [r for r in self.get_user_rate()
+                if str(r.get('status', '')).strip().lower() == 'active']
+
+    def salary_breakdown(self):
+        """
+        Per-rate dicts + grand totals for this staff member.
+        Salary is computed ONLY from Active rates; inactive contracts are
+        excluded from pay (they remain visible in the agreements history).
+        """
+        rows, total_days, total_salary = [], 0, 0.0
+        for r in self.get_active_rates():
+            days, hours, salary = self.calc_rate_earnings(r)
+            rows.append({
+                'rate_type':   r.get('rate_type'),
+                'description': r.get('description'),
+                'amount':      r.get('amount'),
+                'status':      r.get('status'),
+                'days':        days,
+                'hours':       hours,
+                'salary':      salary,
+            })
+            total_days   += days
+            total_salary += salary
+        return rows, total_days, total_salary
+
     def print_rate(self):
         if self.get_user_rate():
             st.subheader("Agreement Details".upper())
             rate_df = pd.DataFrame(self.get_user_rate())
-            rate_df = rate_df.drop(columns=['rate_id', 'staff_id'])
+            drop_cols = [c for c in ['rate_id', 'staff_id'] if c in rate_df.columns]
+            rate_df = rate_df.drop(columns=drop_cols)
+            if 'description' not in rate_df.columns:
+                rate_df['description'] = None
             rate_df["amount"] = rate_df["amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+            # Order columns for readability
+            ordered = [c for c in ['rate_type', 'description', 'amount', 'status'] if c in rate_df.columns]
+            rate_df = rate_df[ordered]
             st.dataframe(
                 rate_df,
                 hide_index=True,
                 column_config={
-                    'rate_type': st.column_config.TextColumn('Rate Type'),
-                    'amount': st.column_config.TextColumn('Rate Amount'),
-                    'status': st.column_config.TextColumn('Status')
+                    'rate_type':   st.column_config.TextColumn('Rate Type'),
+                    'description': st.column_config.TextColumn('Job / Contract'),
+                    'amount':      st.column_config.TextColumn('Rate Amount'),
+                    'status':      st.column_config.TextColumn('Status'),
                 },
                 width='content'
             )
         else:
             st.write('There is no contract')
+
+    STATUS_OPTIONS = ['Active', 'Completed', 'Paused', 'Suspended', 'Closed']
+
+    def update_rate_status(self, rate_id, new_status):
+        """Persist a status change for a single rate row, then refresh cache."""
+        supabase.table("StaffRates").update({"status": new_status}).eq("rate_id", rate_id).execute()
+        init_staff_rate()
+
+    def review_agreements_gui(self):
+        """
+        Reviewable agreements panel: shows every rate (active + historic) and
+        lets the user change each one's status. Only 'Active' rates are used to
+        pay the staff member; others are kept for historic reference only.
+        """
+        rates = self.get_user_rate()
+        if not rates:
+            st.info("This staff member has no agreements yet. Use 'Add Contract' to create one.")
+            return
+
+        staff_id = self.staff.get('user_id')
+
+        for r in rates:
+            rate_id = r.get('rate_id')
+            rtype   = r.get('rate_type') or '—'
+            desc    = r.get('description')
+            amount  = r.get('amount')
+            current = r.get('status') or 'Active'
+            is_active = str(current).strip().lower() == 'active'
+
+            with st.container(border=True):
+                # Header line: rate type + job/contract identifier
+                title = rtype
+                if desc and rtype in ('Per Job', 'Contract'):
+                    title = f"{rtype} — {desc}"
+                badge_color = "#16a34a" if is_active else "#9ca3af"
+                st.markdown(
+                    f"**{title}**  "
+                    f"<span style='background:{badge_color}; color:white; padding:1px 8px; "
+                    f"border-radius:10px; font-size:0.72rem;'>{current}</span>",
+                    unsafe_allow_html=True,
+                )
+                try:
+                    st.caption(f"Rate: R {float(amount or 0):.2f}")
+                except (TypeError, ValueError):
+                    st.caption(f"Rate: {amount}")
+
+                # If it's a Contract with a URL, make it clickable
+                if rtype == 'Contract' and desc and str(desc).lower().startswith(('http://', 'https://')):
+                    st.markdown(f"🔗 [Open contract link]({desc})")
+
+                # Status editor
+                edit_col, save_col = st.columns([2, 1])
+                with edit_col:
+                    options = self.STATUS_OPTIONS
+                    idx = options.index(current) if current in options else 0
+                    chosen = st.selectbox(
+                        "Status", options=options, index=idx,
+                        key=f"agr_status_{staff_id}_{rate_id}",
+                        label_visibility="collapsed",
+                    )
+                with save_col:
+                    if st.button("💾 Update", key=f"agr_save_{staff_id}_{rate_id}", use_container_width=True):
+                        if chosen != current:
+                            try:
+                                self.update_rate_status(rate_id, chosen)
+                                st.success(f"Status changed to {chosen}.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not update status: {e}")
+                        else:
+                            st.info("Status unchanged.")
+
+                if not is_active:
+                    st.caption("ℹ️ Not Active — kept for history, not used for salary.")
 
 class StaffAttendence:
     def __init__(self, staff):
@@ -1066,11 +1309,22 @@ class StaffAttendence:
             return
 
         # Build a display label → rate record mapping so the selected label
-        # resolves to the correct rate_id (fixes the always-index-0 bug).
-        rate_labels = [f"{r.get('rate_type')} - R {r.get('amount')}" for r in self.st_rate]
-        rate_map    = {f"{r.get('rate_type')} - R {r.get('amount')}": r for r in self.st_rate}
+        # resolves to the correct rate_id. For Per Job / Contract we include the
+        # description so a staff member with several concurrent jobs/contracts
+        # can pick exactly the right one.
+        def _rate_label(r):
+            base = f"{r.get('rate_type')} - R {r.get('amount')}"
+            desc = r.get('description')
+            if desc and r.get('rate_type') in ('Per Job', 'Contract'):
+                return f"{r.get('rate_type')} ({desc}) - R {r.get('amount')}"
+            return base
 
-        rate_choice = st.radio(label='Select Rate', options=rate_labels, key=f"rate_choice_{staff_id}")
+        # Only offer Active rates for capturing new attendance.
+        active_rates = [r for r in self.st_rate if str(r.get('status', '')).lower() == 'active'] or self.st_rate
+        rate_labels = [_rate_label(r) for r in active_rates]
+        rate_map    = {_rate_label(r): r for r in active_rates}
+
+        rate_choice = st.radio(label='Select Rate / Job', options=rate_labels, key=f"rate_choice_{staff_id}")
 
         d_col, h_col, s_col = st.columns(3, border=False)
         with d_col:
@@ -1080,7 +1334,7 @@ class StaffAttendence:
         with s_col:
             st.selectbox(label='Status', options=['Paid', 'Unpaid'], index=1, key=f'status_choice_{staff_id}')
 
-        selected_rate = rate_map.get(rate_choice, self.st_rate[0])
+        selected_rate = rate_map.get(rate_choice, active_rates[0])
         self.rate_data['att_date']     = st.session_state.get(f"capt_date_{staff_id}").isoformat()
         self.rate_data['status']       = st.session_state.get(f'status_choice_{staff_id}')
         self.rate_data['hours_worked'] = st.session_state.get(f"tot_hours_{staff_id}")
@@ -1112,16 +1366,30 @@ class StaffAttendence:
     def print_att(self):
         att_list = self.get_days()
         if att_list:
+            # Map rate_id -> readable label so each day shows which job/contract.
+            rate_lookup = {}
+            for r in st.session_state.get('init_staffrate', []):
+                if r.get('staff_id') == self.staff.get('user_id'):
+                    lbl = r.get('rate_type') or '—'
+                    if r.get('description') and r.get('rate_type') in ('Per Job', 'Contract'):
+                        lbl = f"{r.get('rate_type')}: {r.get('description')}"
+                    rate_lookup[r.get('rate_id')] = lbl
+
             att_df = pd.DataFrame(att_list)
-            att_df = att_df.drop(columns=['att_id', 'created_at', 'staff_id', 'rate_id'])
+            att_df['rate_used'] = att_df['rate_id'].map(rate_lookup).fillna('—')
+            drop_cols = [c for c in ['att_id', 'created_at', 'staff_id', 'rate_id'] if c in att_df.columns]
+            att_df = att_df.drop(columns=drop_cols)
+            ordered = [c for c in ['att_date', 'rate_used', 'hours_worked', 'status'] if c in att_df.columns]
+            att_df = att_df[ordered]
             st.subheader('Days worked'.upper())
             st.dataframe(
                 att_df,
                 hide_index=True,
                 column_config={
-                    'att_date': st.column_config.TextColumn('Date Attendet'),
+                    'att_date':     st.column_config.TextColumn('Date Attended'),
+                    'rate_used':    st.column_config.TextColumn('Rate / Job'),
                     'hours_worked': st.column_config.NumberColumn('Total Hours'),
-                    'status': st.column_config.TextColumn('Status')
+                    'status':       st.column_config.TextColumn('Status'),
                 },
                 width='content'
             )
@@ -1133,3 +1401,107 @@ class StaffAttendence:
 
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staff loans / advances
+# ─────────────────────────────────────────────────────────────────────────────
+class Loans:
+    """Manage advances/loans given to a staff member.
+
+    Status is derived from amounts:
+      paid == 0            -> unsettled
+      0 < paid < loan      -> partially settled
+      paid >= loan         -> settled
+    """
+
+    STATUS_UNSETTLED = "unsettled"
+    STATUS_PARTIAL   = "partially settled"
+    STATUS_SETTLED   = "settled"
+
+    def __init__(self, staff):
+        self.staff = staff
+
+    # ── Reads ────────────────────────────────────────────────────────────
+    def get_loans(self):
+        """All loan rows for this staff member (most recent first)."""
+        loans = [
+            l for l in st.session_state.get('init_loans', [])
+            if l.get('staff_id') == self.staff.get('user_id')
+        ]
+        return sorted(loans, key=lambda l: str(l.get('loan_date', '')), reverse=True)
+
+    def get_total_outstanding(self):
+        """Sum of outstanding amounts across all not-fully-settled loans."""
+        total = 0.0
+        for l in self.get_loans():
+            try:
+                total += float(l.get('out_amount', 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        return total
+
+    def has_unsettled(self):
+        return self.get_total_outstanding() > 0
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _derive_status(loan_amount, paid_amount):
+        loan = float(loan_amount or 0)
+        paid = float(paid_amount or 0)
+        if paid <= 0:
+            return Loans.STATUS_UNSETTLED
+        if paid >= loan:
+            return Loans.STATUS_SETTLED
+        return Loans.STATUS_PARTIAL
+
+    # ── Writes ───────────────────────────────────────────────────────────
+    def create_loan(self, loan_date, loan_amount, comments=None):
+        loan_amount = float(loan_amount or 0)
+        payload = {
+            "staff_id":    self.staff.get('user_id'),
+            "loan_date":   loan_date.isoformat() if hasattr(loan_date, 'isoformat') else loan_date,
+            "loan_amount": loan_amount,
+            "paid_amount": 0,
+            "out_amount":  loan_amount,
+            "status":      self._derive_status(loan_amount, 0),
+            "comments":    (comments or "").strip() or None,
+        }
+        supabase.table("StaffLoans").insert(payload).execute()
+        init_loans()
+
+    def record_payment(self, loan_id, payment):
+        """Add a repayment to an existing loan and recompute status/outstanding."""
+        loan = next((l for l in self.get_loans() if l.get('loan_id') == loan_id), None)
+        if not loan:
+            raise ValueError("Loan not found.")
+        loan_amount = float(loan.get('loan_amount', 0) or 0)
+        new_paid    = float(loan.get('paid_amount', 0) or 0) + float(payment or 0)
+        new_paid    = min(new_paid, loan_amount)          # never overpay
+        out_amount  = max(loan_amount - new_paid, 0.0)
+        supabase.table("StaffLoans").update({
+            "paid_amount": new_paid,
+            "out_amount":  out_amount,
+            "status":      self._derive_status(loan_amount, new_paid),
+        }).eq("loan_id", loan_id).execute()
+        init_loans()
+
+    def edit_loan_amount(self, loan_id, new_loan_amount):
+        """Change the borrowed amount; keep paid as-is and recompute the rest."""
+        loan = next((l for l in self.get_loans() if l.get('loan_id') == loan_id), None)
+        if not loan:
+            raise ValueError("Loan not found.")
+        new_loan_amount = float(new_loan_amount or 0)
+        paid       = min(float(loan.get('paid_amount', 0) or 0), new_loan_amount)
+        out_amount = max(new_loan_amount - paid, 0.0)
+        supabase.table("StaffLoans").update({
+            "loan_amount": new_loan_amount,
+            "paid_amount": paid,
+            "out_amount":  out_amount,
+            "status":      self._derive_status(new_loan_amount, paid),
+        }).eq("loan_id", loan_id).execute()
+        init_loans()
+
+    def delete_loan(self, loan_id):
+        supabase.table("StaffLoans").delete().eq("loan_id", loan_id).execute()
+        init_loans()

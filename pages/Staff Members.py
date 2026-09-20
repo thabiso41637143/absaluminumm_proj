@@ -1,7 +1,8 @@
 import streamlit as st
-from models.Model import AbsStaff, Contract, StaffAttendence, Users, inject_css, supabase, init_users, init_staff_rate, init_att_reg
+from models.Model import AbsStaff, Contract, StaffAttendence, Users, inject_css, supabase, init_users, init_staff_rate, init_att_reg, init_loans
 from models.User_Model import *
 import time
+from datetime import date
 
 abs_icon = open("Images/AbsAppIcon.png", "rb").read()
 st.set_page_config(
@@ -35,6 +36,7 @@ def _delete_staff(user_id: str, full_names: str):
     then refresh the in-session caches so the card disappears immediately."""
     try:
         # Delete child records first to respect foreign key constraints
+        supabase.table("StaffLoans").delete().eq("staff_id", user_id).execute()
         supabase.table("StaffAttendance").delete().eq("staff_id", user_id).execute()
         supabase.table("StaffRates").delete().eq("staff_id", user_id).execute()
         supabase.table("users").delete().eq("user_id", user_id).execute()
@@ -43,12 +45,107 @@ def _delete_staff(user_id: str, full_names: str):
         init_users()
         init_staff_rate()
         init_att_reg()
+        init_loans()
 
         st.success(f"✅ **{full_names}** (`{user_id}`) has been deleted.")
         time.sleep(0.5)   # let the socket close cleanly before rerun
         st.rerun()
     except Exception as e:
         st.error(f"Failed to delete staff member: {e}")
+
+
+def _render_loans_panel(abs_user, uid):
+    """List a staff member's loans with review/edit/payment controls, plus a
+    form to record a new advance."""
+    loans_mgr = abs_user.loans
+    loans = loans_mgr.get_loans()
+
+    outstanding = loans_mgr.get_total_outstanding()
+    if outstanding > 0:
+        st.warning(f"⚠️ Total outstanding across all loans: **R {outstanding:,.2f}**")
+    else:
+        st.success("✅ No outstanding loans.")
+
+    # ── Existing loans ────────────────────────────────────────────────────
+    for loan in loans:
+        loan_id = loan.get("loan_id")
+        loan_amt = float(loan.get("loan_amount", 0) or 0)
+        paid_amt = float(loan.get("paid_amount", 0) or 0)
+        out_amt  = float(loan.get("out_amount", 0) or 0)
+        status   = loan.get("status", "unsettled")
+
+        badge = {"settled": "#16a34a", "partially settled": "#d97706"}.get(status, "#b91c1c")
+
+        with st.container(border=True):
+            st.markdown(
+                f"**📅 {loan.get('loan_date', '—')}**  "
+                f"<span style='background:{badge}; color:white; padding:1px 8px; "
+                f"border-radius:10px; font-size:0.72rem;'>{status}</span>",
+                unsafe_allow_html=True,
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Borrowed", f"R {loan_amt:,.2f}")
+            c2.metric("Repaid",   f"R {paid_amt:,.2f}")
+            c3.metric("Outstanding", f"R {out_amt:,.2f}")
+            if loan.get("comments"):
+                st.caption(f"📝 {loan.get('comments')}")
+
+            # Record a repayment (only if something is still owed)
+            if out_amt > 0:
+                pay_col, btn_col = st.columns([2, 1])
+                with pay_col:
+                    pay = st.number_input(
+                        "Repayment amount (R)", min_value=0.00, max_value=float(out_amt),
+                        format="%0.2f", key=f"pay_{uid}_{loan_id}",
+                    )
+                with btn_col:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("💵 Record Payment", key=f"paybtn_{uid}_{loan_id}", use_container_width=True):
+                        if pay > 0:
+                            loans_mgr.record_payment(loan_id, pay)
+                            st.success(f"Recorded R {pay:,.2f} repayment.")
+                            st.rerun()
+                        else:
+                            st.info("Enter an amount greater than R 0.00.")
+
+            # Edit borrowed amount
+            with st.expander("✏️ Edit borrowed amount"):
+                new_amt = st.number_input(
+                    "New borrowed amount (R)", min_value=0.00, value=loan_amt,
+                    format="%0.2f", key=f"edit_{uid}_{loan_id}",
+                )
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    if st.button("💾 Save", key=f"editbtn_{uid}_{loan_id}", use_container_width=True):
+                        loans_mgr.edit_loan_amount(loan_id, new_amt)
+                        st.success("Loan amount updated.")
+                        st.rerun()
+                with ec2:
+                    if st.button("🗑️ Delete Loan", key=f"delloan_{uid}_{loan_id}", use_container_width=True):
+                        loans_mgr.delete_loan(loan_id)
+                        st.success("Loan deleted.")
+                        st.rerun()
+
+    if not loans:
+        st.info("No loans recorded for this staff member yet.")
+
+    # ── New loan ──────────────────────────────────────────────────────────
+    st.markdown("<hr style='border:1px dotted #d1d5db; margin:0.8rem 0;'>", unsafe_allow_html=True)
+    st.markdown("**➕ Record a new advance / loan**")
+    with st.form(f"new_loan_{uid}", clear_on_submit=True):
+        f1, f2 = st.columns(2)
+        with f1:
+            new_date = st.date_input("Loan Date", value=date.today(), format="DD-MM-YYYY")
+        with f2:
+            new_loan_amt = st.number_input("Loan Amount (R)", min_value=0.00, format="%0.2f")
+        new_comment = st.text_input("Reason / Comment", placeholder="Optional")
+        if st.form_submit_button("💾 Save Loan", type="primary", use_container_width=True):
+            if new_loan_amt <= 0:
+                st.error("Loan amount must be greater than R 0.00.")
+            else:
+                loans_mgr.create_loan(new_date, new_loan_amt, new_comment)
+                st.success(f"Loan of R {new_loan_amt:,.2f} recorded.")
+                st.rerun()
 
 
 def _render_staff_card(user: dict):
@@ -76,30 +173,26 @@ def _render_staff_card(user: dict):
 
         st.markdown("<hr style='border:1px dotted #d1d5db; margin:6px 0;'>", unsafe_allow_html=True)
 
-        # ── Summary line ─────────────────────────────────────────────────
+        # ── Summary line (salary is based on Active agreements only) ──────
         try:
             st.markdown(abs_user.get_summary())
         except Exception as e:
             st.warning(f"Could not load summary: {e}")
 
-        # ── Contract / rates ─────────────────────────────────────────────
-        try:
-            staff_cont.print_rate()
-        except Exception as e:
-            st.warning(f"Could not load contract: {e}")
-
         # ── Action buttons ────────────────────────────────────────────────
-        b1, b2, b3, b4, b5 = st.columns(5)
+        b1, b2, b3, b4, b5, b6 = st.columns(6)
         with b1:
-            st.button("📅 Days",    key=f"{uid}_view_days",    use_container_width=True)
+            st.button("📅 Days",       key=f"{uid}_view_days",    use_container_width=True)
         with b2:
-            st.button("💰 Loans",   key=f"{uid}_view_loans",   use_container_width=True)
+            st.button("📋 Agreements", key=f"{uid}_agreements",   use_container_width=True)
         with b3:
-            st.button("👤 Profile", key=f"{uid}_view_profile", use_container_width=True)
+            st.button("➕ Add Rate",   key=f"{uid}_contract",     use_container_width=True)
         with b4:
-            st.button("📄 Contract",key=f"{uid}_contract",     use_container_width=True)
+            st.button("👤 Profile",    key=f"{uid}_view_profile", use_container_width=True)
         with b5:
-            st.button("🗑️ Delete",  key=f"{uid}_delete",       use_container_width=True, type="primary")
+            st.button("💰 Loans",      key=f"{uid}_view_loans",   use_container_width=True)
+        with b6:
+            st.button("🗑️ Delete",     key=f"{uid}_delete",       use_container_width=True, type="primary")
 
         # Track which panel to keep open across reruns
         if "contract_updates" not in st.session_state:
@@ -122,25 +215,50 @@ def _render_staff_card(user: dict):
             except Exception as e:
                 st.error(f"Could not load profile: {e}")
 
-        elif st.session_state.get(f"{uid}_view_loans"):
-            st.session_state.contract_updates = None
-            _panel_header("💰 Loans")
-            try:
-                result = abs_user.get_staff_loan()
-                st.info(result)
-            except Exception as e:
-                st.error(f"Could not load loan info: {e}")
-
         elif (
             st.session_state.get(f"{uid}_contract")
             or st.session_state.contract_updates == f"{uid}_contract"
         ):
-            _panel_header("📄 Contract / Rates")
+            _panel_header("➕ Add New Rate / Contract")
             try:
                 staff_cont.set_gui()
                 st.session_state.contract_updates = f"{uid}_contract"
             except Exception as e:
                 st.error(f"Could not load contract editor: {e}")
+
+        # ── Agreements review: persistent flag so status-change reruns keep
+        #    the panel open (mirrors the delete-panel pattern).
+        if st.session_state.get(f"{uid}_agreements"):
+            st.session_state[f"{uid}_agreements_open"] = True
+
+        if st.session_state.get(f"{uid}_agreements_open"):
+            st.session_state.contract_updates = None
+            _panel_header("📋 Agreements — Review & Update Status")
+            st.caption("Only **Active** agreements are used to calculate salary. "
+                       "Set others to Completed/Paused/etc. to keep them for history only.")
+            try:
+                staff_cont.review_agreements_gui()
+            except Exception as e:
+                st.error(f"Could not load agreements: {e}")
+            if st.button("✖ Close Agreements", key=f"{uid}_agreements_close", use_container_width=True):
+                st.session_state[f"{uid}_agreements_open"] = False
+                st.rerun()
+
+        # ── Loans review/edit: persistent flag so payment/edit reruns keep
+        #    the panel open.
+        if st.session_state.get(f"{uid}_view_loans"):
+            st.session_state[f"{uid}_loans_open"] = True
+
+        if st.session_state.get(f"{uid}_loans_open"):
+            st.session_state.contract_updates = None
+            _panel_header("💰 Loans / Advances")
+            try:
+                _render_loans_panel(abs_user, uid)
+            except Exception as e:
+                st.error(f"Could not load loans: {e}")
+            if st.button("✖ Close Loans", key=f"{uid}_loans_close", use_container_width=True):
+                st.session_state[f"{uid}_loans_open"] = False
+                st.rerun()
 
         # ── Delete: use a persistent flag so the confirmation panel survives
         # the rerun that happens when the user clicks "Yes, Delete".
@@ -356,6 +474,13 @@ def add_staff():
                 index=0,
             )
 
+        # Per Job / Contract need an identifier. Shown always inside the form
+        # (Streamlit forms can't react mid-render); only used when relevant.
+        rate_description = st.text_input(
+            "Job Name / Contract Link (only for 'Per Job' or 'Contract')",
+            placeholder="e.g. Kitchen windows – 12 Main St  |  or  https://contract-link",
+        )
+
         st.markdown("<br>", unsafe_allow_html=True)
         submitted = st.form_submit_button(
             "💾 Save Staff Member", type="primary", use_container_width=True
@@ -370,6 +495,9 @@ def add_staff():
             errors.append("Home Address is required.")
         if rate_amount <= 0:
             errors.append("Rate Amount must be greater than R 0.00.")
+        if rate_type in ("Per Job", "Contract") and not rate_description.strip():
+            label = "job name" if rate_type == "Per Job" else "contract link"
+            errors.append(f"Please provide a {label} for the {rate_type} rate.")
 
         if errors:
             for err in errors:
@@ -393,10 +521,11 @@ def add_staff():
         }
 
         new_rate = {
-            "staff_id":  new_user_id,
-            "rate_type": rate_type,
-            "amount":    rate_amount,
-            "status":    rate_status,
+            "staff_id":    new_user_id,
+            "rate_type":   rate_type,
+            "amount":      rate_amount,
+            "status":      rate_status,
+            "description": rate_description.strip() or None,
         }
 
         try:
