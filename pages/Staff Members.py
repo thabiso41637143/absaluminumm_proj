@@ -329,12 +329,18 @@ def _render_staff_card(user: dict):
 
         # Determine active panel
         if st.session_state.get(f"{uid}_view_days"):
+            st.session_state[f"{uid}_days_open"] = True
+
+        if st.session_state.get(f"{uid}_days_open"):
             st.session_state.contract_updates = None
             _panel_header("📅 Days Worked")
             try:
                 abs_user.print_staff_dates()
             except Exception as e:
                 st.error(f"Could not load days: {e}")
+            if st.button("✖ Close Days", key=f"{uid}_days_close", use_container_width=True):
+                st.session_state[f"{uid}_days_open"] = False
+                st.rerun()
 
         elif st.session_state.get(f"{uid}_view_profile"):
             st.session_state.contract_updates = None
@@ -538,15 +544,16 @@ def staff_register(abs_staff: Users):
 # Add New Staff Member
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _next_user_id() -> str:
+def _next_user_ids() -> tuple:
     """
-    Generate the next sequential ABS user_id by querying the users table.
-    Looks at every user_id that starts with 'ABS' and picks max + 1.
-    Falls back to ABS1001 if none exist yet.
+    Generate the next sequential ABS user_id and user_number by querying the
+    users table.  Returns (user_id: str, user_number: int).
+    Falls back to ('ABS1001', 1001) if no existing rows are found.
     """
     try:
-        result = supabase.table("users").select("user_id").execute()
-        abs_ids = []
+        result = supabase.table("users").select("user_id, user_number").execute()
+        abs_ids      = []
+        user_numbers = []
         for row in result.data or []:
             uid = str(row.get("user_id", ""))
             if uid.upper().startswith("ABS"):
@@ -554,10 +561,22 @@ def _next_user_id() -> str:
                     abs_ids.append(int(uid[3:]))
                 except ValueError:
                     pass
-        next_num = max(abs_ids) + 1 if abs_ids else 1001
-        return f"ABS{next_num}"
+            try:
+                un = row.get("user_number")
+                if un is not None:
+                    user_numbers.append(int(un))
+            except (TypeError, ValueError):
+                pass
+        next_num    = max(abs_ids)      + 1 if abs_ids      else 1001
+        next_un     = max(user_numbers) + 1 if user_numbers else next_num
+        return f"ABS{next_num}", next_un
     except Exception:
-        return "ABS1001"
+        return "ABS1001", 1001
+
+
+def _next_user_id() -> str:
+    """Convenience wrapper — returns just the user_id string."""
+    return _next_user_ids()[0]
 
 
 def add_staff():
@@ -665,10 +684,11 @@ def add_staff():
 
         # ── Build payloads ────────────────────────────────────────────────
         resolved_work = work_location.strip() or "Absaluminum (PTY) LTD"
-        new_user_id   = _next_user_id()   # re-query at submit time to avoid race
+        new_user_id, new_user_number = _next_user_ids()   # re-query at submit time to avoid race
 
         new_staff = {
             "user_id":         new_user_id,
+            "user_number":     new_user_number,
             "full_names":      full_names.strip(),
             "type":            "ABSALUMINUM",
             "home_location":   home_location.strip(),

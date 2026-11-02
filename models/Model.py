@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import sqlite3
+import re
 import pandas as pd
 from datetime import datetime, timedelta, date
 import threading
@@ -475,50 +476,78 @@ class InvQouteUI:
 
 
     def summary(self):
+        def _val(key):
+            v = st.session_state.get(key)
+            return str(v).strip() if v not in (None, "") else "—"
+
         st.divider()
-        st.title("Invoice/Quotation Summary")
+        st.markdown("## 🧾 Quotation / Invoice Summary")
+        st.caption("Please review the details below before finalising.")
 
-        summary = st.container(border=True)
-        with summary:
-            col1, col2 = st.columns(2, border=False)
+        # ── Header: document + customer details ──────────────────────────
+        with st.container(border=True):
+            col1, col2 = st.columns(2)
             with col1:
-                st.write("**Invoice Number:** " + st.session_state.get("Invnumb"))
-                st.write("**Customer Type:** " + st.session_state.get("custtype"))
-                st.write("**Date:** " + st.session_state.get("date").strftime('%d %b %Y'))
-                st.write("**Due Date:** " + st.session_state.get("duedate").strftime('%d %b %Y'))
-            
+                st.markdown("**Document Details**")
+                st.markdown(f"- **Number:** {_val('Invnumb')}")
+                st.markdown(f"- **Customer Type:** {_val('custtype')}")
+                _date = st.session_state.get("date")
+                _due  = st.session_state.get("duedate")
+                st.markdown(f"- **Date:** {_date.strftime('%d %b %Y') if _date else '—'}")
+                st.markdown(f"- **Due Date:** {_due.strftime('%d %b %Y') if _due else '—'}")
             with col2:
-                st.write("**Invoice To:** " + st.session_state.get("Invto"))
-                st.write("**Email Address:** " + st.session_state.get("email"))
-                st.write("**Contact Numbers:** " + st.session_state.get("contnumb"))
-                st.write("**Address:** " + st.session_state.get("adr"))
+                st.markdown("**Customer Details**")
+                st.markdown(f"- **Invoiced To:** {_val('Invto')}")
+                st.markdown(f"- **Client VAT:** {_val('cust_tax')}")
+                st.markdown(f"- **Email:** {_val('email')}")
+                st.markdown(f"- **Contact:** {_val('contnumb')}")
+                st.markdown(f"- **Address:** {_val('adr')}")
 
-        st.write(st.session_state.material_df)
+        # ── Items table (currency-formatted, read-only) ──────────────────
+        st.markdown("**Items**")
+        items_df = st.session_state.material_df.copy(deep=True)
+        for col in ("Unit price", "Total amount"):
+            if col in items_df.columns:
+                items_df[col] = items_df[col].apply(
+                    lambda x: f"R {float(x):,.2f}" if pd.notna(x) and str(x) != "" else x
+                )
+        st.dataframe(
+            items_df,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Description":  st.column_config.TextColumn("Description"),
+                "Unit price":   st.column_config.TextColumn("Unit Price"),
+                "Quantity":     st.column_config.NumberColumn("Qty"),
+                "Total amount": st.column_config.TextColumn("Total"),
+            },
+        )
 
-        sub_boder = st.container(border=True)
-        with sub_boder:
-            tot1, tot2 = st.columns(2, border=False)
-            with tot1:
-                st.write(f"**Sub total:** R {float(st.session_state.get('sub_tot')):.2f}")
-                st.write(f"**Total Less Discount:** R {float(st.session_state.get('less_disc')):.2f}")
+        # ── Totals block ──────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("**Totals**")
+            rows = [("Sub Total", st.session_state.get('sub_tot', 0))]
+            if st.session_state.get("discount_input_value", 0) > 0:
+                rows.append(("Discount", -float(st.session_state.get('discount_input_value', 0))))
+            rows.append(("Total Less Discount", st.session_state.get('less_disc', 0)))
+            if st.session_state.get("inst_cost_input", 0) > 0:
+                rows.append(("Installation Cost", st.session_state.get('inst_cost_input', 0)))
+            if st.session_state.get("tax_input", 0) > 0:
+                rows.append(("Tax", st.session_state.get('tax_input', 0)))
+            if st.session_state.get("dep_input", 0) > 0:
+                rows.append(("Deposit", st.session_state.get('dep_input', 0)))
 
-            with tot2:
-                if st.session_state.get("discount_input_value") > 0:
-                    st.write(f"**Discount** R {float(st.session_state.get('discount_input_value')):.2f}")
-                
-                if st.session_state.get("inst_cost_input") > 0:
-                    st.write(f"**Installation Cost:** R {float(st.session_state.get('inst_cost_input')):.2f}")
+            for label, amount in rows:
+                lc, rc = st.columns([3, 1])
+                lc.markdown(label)
+                rc.markdown(f"R {float(amount or 0):,.2f}")
 
-                if st.session_state.get("tax_input") > 0:
-                    st.write(f"**Tax Amount:** R {float(st.session_state.get('tax_input')):.2f}")
-                
-                if st.session_state.get("dep_input") > 0:
-                    st.write(f"**Deposite:** R {float(st.session_state.get('dep_input')):.2f}")
-            
         st.markdown(
-            f"<p style='color:red; text-decoration:underline; font-weight:bold; text-align:center;'>Total Amount: R {float(st.session_state.get('tot_bal')):.2f}</p>",
-            unsafe_allow_html=True )
-
+            f"<div style='background:#1f2937; color:white; padding:10px 16px; "
+            f"border-radius:8px; text-align:center; font-size:1.15rem; font-weight:700;'>"
+            f"TOTAL: R {float(st.session_state.get('tot_bal', 0) or 0):,.2f}</div>",
+            unsafe_allow_html=True,
+        )
         st.divider()
     
     def invnumb_exists(self, invoice_numb: int) -> bool:
@@ -629,13 +658,18 @@ class InvQouteUI:
         if st.session_state.get("current_status", "") == "Reset":
             st.rerun()
         
+        # Show what's still needed before the document can be generated.
+        missing = self.missing_requirements()
+        if missing:
+            st.info("ℹ️ To enable **Generate**, please provide: " + ", ".join(f"**{m}**" for m in missing))
+
         left_button, middle_button, right_button = st.columns([1, 1, 1], border=False)
         with left_button:
-            if st.button(gen_message):
+            if st.button(gen_message, disabled=bool(missing), use_container_width=True):
                 self.finalise_inv_qout()
                 st.session_state.finalise_details = True
         with right_button:
-            if st.button("Cancel Qoutation"):
+            if st.button("Cancel Qoutation", use_container_width=True):
                 st.session_state.update_qoutation = False
                 st.session_state.edit_qoutation = False
                 st.rerun()
@@ -691,36 +725,78 @@ class InvQouteUI:
     def warning_validator(self):
         self.warnings = []
 
-        if st.session_state.get("email", "").strip(" ") == "":
-            self.warnings.append(f"Email not filled!")
+        # Note: .get(key, "") still returns None if the key exists with a None
+        # value, so coerce with `or ""` before calling .strip().
+        if not str(st.session_state.get("email") or "").strip():
+            self.warnings.append("Email not filled!")
 
-        if st.session_state.get("contnumb", "").strip(" ") == "":
-            self.warnings.append(f"You didn't capture the client contact numbers!")
+        if not str(st.session_state.get("contnumb") or "").strip():
+            self.warnings.append("You didn't capture the client contact numbers!")
 
-        if st.session_state.get("adr", "").strip(" ") == "":
-            self.warnings.append(f"Client address was not added!")
-        
+        if not str(st.session_state.get("adr") or "").strip():
+            self.warnings.append("Client address was not added!")
+
         for w in self.warnings:
             st.warning(w)
 
+    # ── Validation helpers ────────────────────────────────────────────────
+    def missing_requirements(self):
+        """Return a list of unmet requirements for generating a quotation/invoice.
+        Empty list means the Generate button can be enabled."""
+        missing = []
+        # Required: Invoiced To
+        if not str(st.session_state.get("Invto", "") or "").strip():
+            missing.append("Invoiced To")
+        # Required: Select Customer
+        if st.session_state.get("custtype") is None:
+            missing.append("Select Customer")
+        # Required: at least one item
+        df = st.session_state.get("material_df")
+        if df is None or getattr(df, "shape", (0,))[0] == 0:
+            missing.append("At least one item")
+        return missing
+
+    def is_ready_to_generate(self):
+        return len(self.missing_requirements()) == 0
+
+    @staticmethod
+    def _valid_email(value):
+        return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value.strip()) is not None
+
+    @staticmethod
+    def _valid_phone(value):
+        # Allow digits, spaces, +, -, parentheses; require 7–15 digits total.
+        digits = re.sub(r"\D", "", value)
+        return 7 <= len(digits) <= 15
+
+    def validate_contact_fields(self):
+        """Validate optional email/contact ONLY when they are filled.
+        Returns a list of error messages (empty = all good)."""
+        errors = []
+        email = str(st.session_state.get("email", "") or "").strip()
+        phone = str(st.session_state.get("contnumb", "") or "").strip()
+        if email and not self._valid_email(email):
+            errors.append(f"'{email}' is not a valid email address.")
+        if phone and not self._valid_phone(phone):
+            errors.append(f"'{phone}' is not a valid contact number.")
+        return errors
+
     def finalise_inv_qout(self):
-        self.input_validator = []
-
-        if not st.session_state.material_df.shape[0] > 0:
-            self.input_validator.append(f"Please Please add 1 product first")
-
-        if st.session_state.get("Invto", "").strip(" ") == "":
-            self.input_validator.append(f"Please Fill in the **Invoice to**")
-        
-        if st.session_state.get("custtype", None) == None:
-            self.input_validator.append(f"Please make sure that you **select customer**")
-        
-        if len(self.input_validator) > 0:
-            st.write(self.input_validator)
+        # Required-field guard (belt-and-braces; the button is also disabled).
+        self.input_validator = [f"Please provide: **{m}**" for m in self.missing_requirements()]
+        if self.input_validator:
             self.validate_dilog(self.input_validator)
-        else:
-            self.warning_validator()
-            self.summary()         
+            return
+
+        # Validate optional contact fields only when filled.
+        contact_errors = self.validate_contact_fields()
+        if contact_errors:
+            self.validate_dilog(contact_errors)
+            return
+
+        # Soft warnings for empty optional fields, then present the summary.
+        self.warning_validator()
+        self.summary()
 
     @st.dialog("Invoice To")
     def validate_dilog(self, message):
@@ -1415,38 +1491,155 @@ class StaffAttendence:
         
         return att_list
 
+    def delete_att_row(self, att_id):
+        """Permanently delete a single attendance record by its att_id."""
+        supabase.table('StaffAttendance').delete().eq('att_id', att_id).execute()
+        init_att_reg()
+
+    def update_att_row(self, att_id, att_date, hours_worked, status, rate_id):
+        """Update an existing attendance record and refresh the cache."""
+        supabase.table('StaffAttendance').update({
+            'att_date':     att_date,
+            'hours_worked': hours_worked,
+            'status':       status,
+            'rate_id':      rate_id,
+        }).eq('att_id', att_id).execute()
+        init_att_reg()
+
     def print_att(self):
         att_list = self.get_days()
-        if att_list:
-            # Map rate_id -> readable label so each day shows which job/contract.
-            rate_lookup = {}
-            for r in st.session_state.get('init_staffrate', []):
-                if r.get('staff_id') == self.staff.get('user_id'):
-                    lbl = r.get('rate_type') or '—'
-                    if r.get('description') and r.get('rate_type') in ('Per Job', 'Contract'):
-                        lbl = f"{r.get('rate_type')}: {r.get('description')}"
-                    rate_lookup[r.get('rate_id')] = lbl
+        staff_id = self.staff.get('user_id')
 
-            att_df = pd.DataFrame(att_list)
-            att_df['rate_used'] = att_df['rate_id'].map(rate_lookup).fillna('—')
-            drop_cols = [c for c in ['att_id', 'created_at', 'staff_id', 'rate_id'] if c in att_df.columns]
-            att_df = att_df.drop(columns=drop_cols)
-            ordered = [c for c in ['att_date', 'rate_used', 'hours_worked', 'status'] if c in att_df.columns]
-            att_df = att_df[ordered]
-            st.subheader('Days worked'.upper())
-            st.dataframe(
-                att_df,
-                hide_index=True,
-                column_config={
-                    'att_date':     st.column_config.TextColumn('Date Attended'),
-                    'rate_used':    st.column_config.TextColumn('Rate / Job'),
-                    'hours_worked': st.column_config.NumberColumn('Total Hours'),
-                    'status':       st.column_config.TextColumn('Status'),
-                },
-                width='content'
-            )
-        else:
+        # Build rate_id -> label map for display, and also a label -> rate record
+        # map that the edit form needs to let the user change the rate/job.
+        rate_lookup  = {}   # rate_id -> display label
+        rate_records = []   # all rate rows for this staff member
+        for r in st.session_state.get('init_staffrate', []):
+            if r.get('staff_id') == staff_id:
+                lbl = r.get('rate_type') or '—'
+                if r.get('description') and r.get('rate_type') in ('Per Job', 'Contract'):
+                    lbl = f"{r.get('rate_type')}: {r.get('description')}"
+                rate_lookup[r.get('rate_id')] = lbl
+                rate_records.append(r)
+
+        if not att_list:
             st.write('There is no days worked.')
+            return
+
+        st.subheader('Days worked'.upper())
+
+        # Column headers
+        hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([2, 3, 1.5, 1.5, 1, 1])
+        hc1.markdown("**Date Attended**")
+        hc2.markdown("**Rate / Job**")
+        hc3.markdown("**Total Hours**")
+        hc4.markdown("**Status**")
+        hc5.markdown("**Edit**")
+        hc6.markdown("**Delete**")
+        st.divider()
+
+        for row in att_list:
+            att_id   = row.get('att_id')
+            edit_key = f"att_edit_{att_id}"
+            del_key  = f"att_del_{att_id}"
+
+            # ── Delete confirmation ───────────────────────────────────────
+            if st.session_state.get(del_key):
+                with st.container(border=True):
+                    st.warning(
+                        f"Delete the record for **{row.get('att_date')}** "
+                        f"({rate_lookup.get(row.get('rate_id'), '—')}, "
+                        f"{row.get('hours_worked')} hrs, {row.get('status')})?"
+                    )
+                    dc1, dc2, _ = st.columns([1, 1, 4])
+                    with dc1:
+                        if st.button("✅ Yes, Delete", key=f"att_del_confirm_{att_id}", type="primary", use_container_width=True):
+                            st.session_state.pop(del_key, None)
+                            self.delete_att_row(att_id)
+                            st.rerun()
+                    with dc2:
+                        if st.button("✖ Cancel", key=f"att_del_cancel_{att_id}", use_container_width=True):
+                            st.session_state.pop(del_key, None)
+                            st.rerun()
+                continue  # skip the normal row while delete confirmation is open
+
+            # ── Edit form ─────────────────────────────────────────────────
+            if st.session_state.get(edit_key):
+                with st.container(border=True):
+                    st.markdown(f"**Editing record — {row.get('att_date')}**")
+
+                    ec1, ec2, ec3, ec4 = st.columns(4)
+                    with ec1:
+                        try:
+                            default_date = datetime.strptime(str(row.get('att_date', '')), "%Y-%m-%d").date()
+                        except Exception:
+                            default_date = datetime.today().date()
+                        new_date = st.date_input(
+                            "Date", value=default_date, format="DD-MM-YYYY",
+                            key=f"att_edit_date_{att_id}"
+                        )
+                    with ec2:
+                        # Rate / Job selector — show all rates for this staff member
+                        if rate_records:
+                            rate_labels = [rate_lookup.get(r.get('rate_id'), '—') for r in rate_records]
+                            rate_id_map = {rate_lookup.get(r.get('rate_id'), '—'): r.get('rate_id') for r in rate_records}
+                            current_label = rate_lookup.get(row.get('rate_id'), rate_labels[0])
+                            default_idx = rate_labels.index(current_label) if current_label in rate_labels else 0
+                            new_rate_label = st.selectbox(
+                                "Rate / Job", options=rate_labels, index=default_idx,
+                                key=f"att_edit_rate_{att_id}"
+                            )
+                            new_rate_id = rate_id_map.get(new_rate_label)
+                        else:
+                            st.info("No rates available.")
+                            new_rate_id = row.get('rate_id')
+                    with ec3:
+                        new_hours = st.number_input(
+                            "Total Hours", min_value=1, max_value=24,
+                            value=int(row.get('hours_worked', 8) or 8),
+                            key=f"att_edit_hours_{att_id}"
+                        )
+                    with ec4:
+                        current_status = str(row.get('status', 'Unpaid'))
+                        status_options = ['Paid', 'Unpaid']
+                        status_idx = status_options.index(current_status) if current_status in status_options else 1
+                        new_status = st.selectbox(
+                            "Status", options=status_options, index=status_idx,
+                            key=f"att_edit_status_{att_id}"
+                        )
+
+                    sv1, sv2, _ = st.columns([1, 1, 4])
+                    with sv1:
+                        if st.button("💾 Save", key=f"att_edit_save_{att_id}", type="primary", use_container_width=True):
+                            self.update_att_row(
+                                att_id      = att_id,
+                                att_date    = new_date.isoformat(),
+                                hours_worked= new_hours,
+                                status      = new_status,
+                                rate_id     = new_rate_id,
+                            )
+                            st.session_state.pop(edit_key, None)
+                            st.rerun()
+                    with sv2:
+                        if st.button("✖ Cancel", key=f"att_edit_cancel_{att_id}", use_container_width=True):
+                            st.session_state.pop(edit_key, None)
+                            st.rerun()
+                continue  # skip the normal row while the edit form is open
+
+            # ── Normal read-only row ──────────────────────────────────────
+            c1, c2, c3, c4, c5, c6 = st.columns([2, 3, 1.5, 1.5, 1, 1])
+            c1.write(row.get('att_date', '—'))
+            c2.write(rate_lookup.get(row.get('rate_id'), '—'))
+            c3.write(row.get('hours_worked', '—'))
+            status_val = str(row.get('status', '—'))
+            status_color = "green" if status_val.lower() == "paid" else "orange"
+            c4.markdown(f"<span style='color:{status_color}; font-weight:600;'>{status_val}</span>", unsafe_allow_html=True)
+            if c5.button("✏️", key=f"att_edit_btn_{att_id}", use_container_width=True, help="Edit this day"):
+                st.session_state[edit_key] = True
+                st.rerun()
+            if c6.button("🗑️", key=f"att_del_btn_{att_id}", use_container_width=True, help="Delete this day"):
+                st.session_state[del_key] = True
+                st.rerun()
 
     def get_tot_days(self):
         return len(self.get_days())
