@@ -365,7 +365,7 @@ class Qoute_Manager:
         qout_ui = InvQouteUI(invQouteUrl=(
             "https://script.google.com/macros/s/"
             "AKfycbw5AToPOc7vpUhNGLLQ-9SEaWiXTXkBRDny8AiLBPwgUwCV"
-            "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&invNumb="
+            "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&menue=createQoutation&invNumb="
         ))
         qout_ui.gen_ui(gen_message="**Generate Quotation**")
 

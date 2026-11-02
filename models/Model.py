@@ -227,11 +227,23 @@ class InvQouteUI:
 
     def cust_details(self):
         st.write("**Customer Details**")
-        self.inv_to = st.text_input("Invoiced To", key="Invto", value=st.session_state.edit_qout_inv.get("Invto"))
-        self.cust_tax = st.text_input("Client VAT", key="cust_tax", value=st.session_state.edit_qout_inv.get("cust_tax"))
-        self.cust_email = st.text_input("Client Email", key="email", value=st.session_state.edit_qout_inv.get("email"))
-        self.cust_cont = st.text_input("Contact Numbers", key="contnumb", value=st.session_state.edit_qout_inv.get("contnumb"))
-        self.cust_addr = st.text_area("Client Address", key="adr", value=st.session_state.edit_qout_inv.get("adr"), height="content")
+        # Only pass value= when the widget key isn't already in session state.
+        # If the key exists, Streamlit uses the session state value and ignores value=.
+        if "Invto" not in st.session_state:
+            st.session_state["Invto"] = st.session_state.edit_qout_inv.get("Invto") or ""
+        if "cust_tax" not in st.session_state:
+            st.session_state["cust_tax"] = st.session_state.edit_qout_inv.get("cust_tax") or ""
+        if "email" not in st.session_state:
+            st.session_state["email"] = st.session_state.edit_qout_inv.get("email") or ""
+        if "contnumb" not in st.session_state:
+            st.session_state["contnumb"] = st.session_state.edit_qout_inv.get("contnumb") or ""
+        if "adr" not in st.session_state:
+            st.session_state["adr"] = st.session_state.edit_qout_inv.get("adr") or ""
+        self.inv_to = st.text_input("Invoiced To", key="Invto")
+        self.cust_tax = st.text_input("Client VAT", key="cust_tax")
+        self.cust_email = st.text_input("Client Email", key="email")
+        self.cust_cont = st.text_input("Contact Numbers", key="contnumb")
+        self.cust_addr = st.text_area("Client Address", key="adr", height="content")
 
     def totals(self):
         st.write("**TOTALS**")
@@ -562,27 +574,48 @@ class InvQouteUI:
     def submit_inv_qout_details(self):
         st.write("Submitting details to the server")
         print("Submitting details to the server")
+
+        # Read from the snapshot taken when Generate was clicked — guaranteed non-None
+        sub = st.session_state.get("_submission", {})
+        inv_numb  = sub.get("Invnumb")
+        items_df  = sub.get("material_df", st.session_state.material_df)
+
+        if not inv_numb:
+            st.error("❌ Invoice number is missing. Please go back and re-select the customer.")
+            return
+
         items = []
-        for index, row in st.session_state.material_df.iterrows():
-            items.append({"inv_numb": int(st.session_state.get("Invnumb")), 
-            "item_description": row["Description"], "unit_price": row["Unit price"], 
-            "quantity": row["Quantity"], "total_price": row["Total amount"]})
+        for _, row in items_df.iterrows():
+            items.append({
+                "inv_numb":         int(inv_numb),
+                "item_description": row["Description"],
+                "unit_price":       row["Unit price"],
+                "quantity":         row["Quantity"],
+                "total_price":      row["Total amount"],
+            })
 
-        inv_details = {"inv_date": st.session_state.get("date").isoformat(),
-        "inv_numb": int(st.session_state.get("Invnumb")), "inv_to": st.session_state.get("Invto"), 
-        "inv_duedate": st.session_state.get("duedate").isoformat(), "cust_group": st.session_state.get("custtype"),
-        "cust_email": st.session_state.get("email"), "cust_numb": st.session_state.get("contnumb"), 
-        "cust_address": st.session_state.get("adr"), "cust_tax": int(st.session_state.get("cust_tax"))  
-        if st.session_state.get("cust_tax") else 0}
+        inv_details = {
+            "inv_date":    sub.get("date").isoformat(),
+            "inv_numb":    int(inv_numb),
+            "inv_to":      sub.get("Invto"),
+            "inv_duedate": sub.get("duedate").isoformat(),
+            "cust_group":  sub.get("custtype"),
+            "cust_email":  sub.get("email"),
+            "cust_numb":   sub.get("contnumb"),
+            "cust_address":sub.get("adr"),
+            "cust_tax":    int(sub.get("cust_tax")) if sub.get("cust_tax") else 0,
+        }
 
-        total_inv = {"inv_numb": int(st.session_state.get("Invnumb")),
-        "total_balance": float(st.session_state.get('tot_bal')), 
-        "total_inctax": float(st.session_state.get('tax_input')),
-        "total_lessdisc": float(st.session_state.get('less_disc')), 
-        "sub_total": float(st.session_state.get('sub_tot')), 
-        "deposit": float(st.session_state.get('dep_input')), 
-        "tax_rate": 0.15, "installation_cost": float(st.session_state.get('inst_cost_input')), 
-        "discount": float(st.session_state.get('discount_input_value'))
+        total_inv = {
+            "inv_numb":          int(inv_numb),
+            "total_balance":     float(sub.get("tot_bal") or 0),
+            "total_inctax":      float(sub.get("tax_input") or 0),
+            "total_lessdisc":    float(sub.get("less_disc") or 0),
+            "sub_total":         float(sub.get("sub_tot") or 0),
+            "deposit":           float(sub.get("dep_input") or 0),
+            "tax_rate":          0.15,
+            "installation_cost": float(sub.get("inst_cost_input") or 0),
+            "discount":          float(sub.get("discount_input_value") or 0),
         }
 
         if not self.invnumb_exists(invoice_numb=inv_details.get("inv_numb")):
@@ -592,41 +625,67 @@ class InvQouteUI:
                 response = supabase.table("Items").insert(items).execute()
                 response = supabase.table("Totals").insert(total_inv).execute()
                 respond = supabase.table("invGenerator").update({"status": "used"})\
-                .eq("gen_id", st.session_state.gen_inv_numb).execute()
-                st.write(f"Change status of the following number to used: {st.session_state.gen_inv_numb}")
+                .eq("gen_id", sub.get("gen_inv_numb")).execute()
+                st.write(f"Change status of the following number to used: {sub.get('gen_inv_numb')}")
 
                 with st.spinner("⏳ Generating qoutation... Please wait."):
-                    results_invqout = requests.get(self.invQouteUrl)
+                    results_invqout = requests.get(self.invQouteUrl, timeout=120)
 
-                self.reset_ui(json.loads(results_invqout.text))
-                
+                print(f"[GAS] status={results_invqout.status_code}")
+                print(f"[GAS] response text={results_invqout.text[:500]}")
+
+                if results_invqout.status_code != 200:
+                    st.error(f"❌ The document server returned an error (HTTP {results_invqout.status_code}). "
+                             f"The data was saved — please retry generating from Manage Quotations.")
+                    return
+
+                raw_text = results_invqout.text.strip()
+                if not raw_text:
+                    st.error("❌ The document server returned an empty response. "
+                             "The data was saved — please retry generating from Manage Quotations.")
+                    return
+
+                try:
+                    parsed = json.loads(raw_text)
+                except json.JSONDecodeError as je:
+                    st.error(f"❌ Could not read the server response (not valid JSON): {je}\n\nRaw response: {raw_text[:300]}")
+                    return
+
+                self.reset_ui(parsed)
+
+            except requests.exceptions.Timeout:
+                st.error("❌ The request to the document server timed out. "
+                         "The data was saved — please retry generating from Manage Quotations.")
             except Exception as e:
-                print(e)
+                st.error(f"❌ An unexpected error occurred: {e}")
+                print(f"[submit_inv_qout_details] error: {e}")
         else:
             st.write("Qoutation already exist.")
             
     def print_qoute_results(self):
         st.success("✅ Qoutation completed")
-        st.session_state.qoute_results["payed_amount"] = st.session_state.qoute_results["payed_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-        st.session_state.qoute_results["total_amount"] = st.session_state.qoute_results["total_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-        st.session_state.qoute_results["oust_amount"] = st.session_state.qoute_results["oust_amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+        df = st.session_state.qoute_results
+
+        # Format currency columns only if present
+        for col in ("payed_amount", "total_amount", "oust_amount"):
+            if col in df.columns:
+                df[col] = df[col].apply(
+                    lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x
+                )
+
         st.dataframe(
-            st.session_state.qoute_results,
+            df,
             hide_index=True,
             column_config={
-                'inv_numb': st.column_config.TextColumn('Invoice No'),
-                'inv_to': st.column_config.TextColumn('Invoiced To'),
-                'qout_name': st.column_config.TextColumn('Qoute Name'),
+                'inv_numb':     st.column_config.TextColumn('Invoice No'),
+                'inv_to':       st.column_config.TextColumn('Invoiced To'),
+                'qout_name':    st.column_config.TextColumn('Qoute Name'),
                 'total_amount': st.column_config.TextColumn('Total Amount (R)'),
-                'payed_amount': st.column_config.TextColumn('Amount Payed (R)'),
-                'oust_amount': st.column_config.TextColumn('Oustanding Amount (R)'),
-                'status': st.column_config.TextColumn('Status'),
-                'qoute_pdf': st.column_config.LinkColumn(
-                    'PDF File', display_text='View PDF File'
-                ),
-                'qoute_doc': st.column_config.LinkColumn(
-                    'Document File', display_text='View Doc File'
-                ),
+                'payed_amount': st.column_config.TextColumn('Amount Paid (R)'),
+                'oust_amount':  st.column_config.TextColumn('Outstanding (R)'),
+                'status':       st.column_config.TextColumn('Status'),
+                'qoute_pdf':    st.column_config.LinkColumn('PDF File', display_text='View PDF'),
+                'qoute_doc':    st.column_config.LinkColumn('Doc File', display_text='View Doc'),
             }
         )
         st.session_state.results_status = False
@@ -644,45 +703,114 @@ class InvQouteUI:
         st.rerun()
         
     def gen_ui(self, gen_message=""):
+        # ── Step 3: show completed result ────────────────────────────────
+        if st.session_state.get('results_status', False):
+            if 'qoute_results' in st.session_state:
+                self.print_qoute_results()
+            if st.button('**Close**'):
+                st.rerun()
+            return
+
+        # ── Step 2: show summary + finalise/edit buttons ──────────────────
+        if st.session_state.get('finalise_details', False):
+            self.summary()
+
+            col_edit, col_finalise, col_cancel = st.columns([1, 1, 1])
+            with col_edit:
+                if st.button("✏️ Edit Details", use_container_width=True):
+                    # Write values directly into the widget session state keys
+                    # so the form re-renders with the correct values.
+                    st.session_state["Invto"]    = st.session_state.get("Invto")
+                    st.session_state["cust_tax"] = st.session_state.get("cust_tax")
+                    st.session_state["email"]    = st.session_state.get("email")
+                    st.session_state["contnumb"] = st.session_state.get("contnumb")
+                    st.session_state["adr"]      = st.session_state.get("adr")
+                    st.session_state["custtype"] = st.session_state.get("custtype")
+                    st.session_state["Invnumb"]  = st.session_state.get("Invnumb")
+                    st.session_state["date"]     = st.session_state.get("date")
+                    st.session_state["duedate"]  = st.session_state.get("duedate")
+                    # Snapshot into edit_qout_inv as backup for date fallback
+                    st.session_state.edit_qout_inv = {
+                        "Invto":    st.session_state.get("Invto"),
+                        "cust_tax": st.session_state.get("cust_tax"),
+                        "email":    st.session_state.get("email"),
+                        "contnumb": st.session_state.get("contnumb"),
+                        "adr":      st.session_state.get("adr"),
+                        "custtype": st.session_state.get("custtype"),
+                        "Invnumb":  st.session_state.get("Invnumb"),
+                        "date":     st.session_state.get("date"),
+                        "duedate":  st.session_state.get("duedate"),
+                    }
+                    st.session_state.finalise_details = False
+                    st.session_state._editing_draft = True
+                    st.rerun()
+            with col_finalise:
+                if st.button("✅ Finalise Details", type="primary", use_container_width=True):
+                    self.submit_inv_qout_details()
+            with col_cancel:
+                if st.button("✖ Cancel", use_container_width=True):
+                    st.session_state.finalise_details = False
+                    st.session_state.update_qoutation = False
+                    st.session_state.edit_qoutation = False
+                    st.rerun()
+            return
+
+        # ── Step 1: show the form ─────────────────────────────────────────
         left, right = st.columns(2, border=True)
         with left:
-            customer = self.cust_details()
-
+            self.cust_details()
         with right:
-            invoice = self.inv_details()
-        
+            self.inv_details()
+
         mat = st.columns(1, border=True)
         with mat[0]:
             self.capture_items()
-        
+
         if st.session_state.get("current_status", "") == "Reset":
             st.rerun()
-        
+
         # Show what's still needed before the document can be generated.
         missing = self.missing_requirements()
         if missing:
             st.info("ℹ️ To enable **Generate**, please provide: " + ", ".join(f"**{m}**" for m in missing))
 
-        left_button, middle_button, right_button = st.columns([1, 1, 1], border=False)
+        left_button, _, right_button = st.columns([1, 1, 1])
         with left_button:
-            if st.button(gen_message, disabled=bool(missing), use_container_width=True):
-                self.finalise_inv_qout()
-                st.session_state.finalise_details = True
+            if st.button(gen_message, disabled=bool(missing), type="primary", use_container_width=True):
+                # Validate optional contact fields before moving to summary
+                contact_errors = self.validate_contact_fields()
+                if contact_errors:
+                    self.validate_dilog(contact_errors)
+                else:
+                    self.warning_validator()
+                    # Snapshot all form values now while widgets are rendered
+                    st.session_state._submission = {
+                        "Invnumb":              st.session_state.get("Invnumb"),
+                        "Invto":                st.session_state.get("Invto"),
+                        "cust_tax":             st.session_state.get("cust_tax"),
+                        "email":                st.session_state.get("email"),
+                        "contnumb":             st.session_state.get("contnumb"),
+                        "adr":                  st.session_state.get("adr"),
+                        "custtype":             st.session_state.get("custtype"),
+                        "date":                 st.session_state.get("date"),
+                        "duedate":              st.session_state.get("duedate"),
+                        "sub_tot":              st.session_state.get("sub_tot"),
+                        "less_disc":            st.session_state.get("less_disc"),
+                        "tax_input":            st.session_state.get("tax_input"),
+                        "tot_bal":              st.session_state.get("tot_bal"),
+                        "dep_input":            st.session_state.get("dep_input"),
+                        "inst_cost_input":      st.session_state.get("inst_cost_input"),
+                        "discount_input_value": st.session_state.get("discount_input_value"),
+                        "material_df":          st.session_state.material_df.copy(),
+                        "gen_inv_numb":         st.session_state.get("gen_inv_numb"),
+                    }
+                    st.session_state.finalise_details = True
+                    st.session_state.pop("_editing_draft", None)
+                    st.rerun()
         with right_button:
-            if st.button("Cancel Qoutation", use_container_width=True):
+            if st.button("Cancel Quotation", use_container_width=True):
                 st.session_state.update_qoutation = False
                 st.session_state.edit_qoutation = False
-                st.rerun()
-        
-        if st.session_state.get('finalise_details', False):
-            if st.button("**Finalise Details**"):
-                self.submit_inv_qout_details()
-        
-        if st.session_state.get('results_status', False):
-            if 'qoute_results' in st.session_state:
-                self.print_qoute_results()
-        
-            if st.button('**Close**'):
                 st.rerun()
 
     def inv_details(self, cust_type = ""):
@@ -691,34 +819,50 @@ class InvQouteUI:
             cust_type[record['category']] = record["starting_number"]       
 
         st.write("**Invoice Details**")
-        if st.session_state.edit_qout_inv:
+        if st.session_state.edit_qout_inv and not st.session_state.get("_editing_draft"):
+            # Editing a previously saved quotation — lock the customer selector
             st.session_state["custtype"] = st.session_state.edit_qout_inv.get("custtype")
-            self.cust_selection = st.selectbox("Select Customer", cust_type.keys(),index=None, 
+            if "Invnumb" not in st.session_state:
+                st.session_state["Invnumb"] = st.session_state.edit_qout_inv.get("Invnumb")
+            self.cust_selection = st.selectbox("Select Customer", cust_type.keys(), index=None,
                                                key="custtype", disabled=True)
-            # st.session_state["Invnumb"] = st.session_state.edit_qout_inv.get("Invnumb")
-            self.inv_no = st.text_input("Inv Number",disabled=True, key="Invnumb", 
-                                        value=st.session_state.edit_qout_inv.get("Invnumb"))
+            self.inv_no = st.text_input("Inv Number", disabled=True, key="Invnumb")
         else:
-            self.cust_selection = st.selectbox("Select Customer", cust_type.keys(),index=None, 
+            # New quotation or returning from summary — customer selector is editable
+            keys = list(cust_type.keys())
+            saved_type = st.session_state.edit_qout_inv.get("custtype") if st.session_state.edit_qout_inv else None
+            default_index = keys.index(saved_type) if saved_type in keys else None
+            self.cust_selection = st.selectbox("Select Customer", keys, index=default_index,
                                                placeholder="Select customer", key="custtype", disabled=False)
             if self.cust_selection:
-                st.session_state['Invnumb'] = f"{cust_type[self.cust_selection]}{date.today().year}{st.session_state.gen_inv_numb}"
+                # Only regenerate the inv number if it isn't already set (preserve on return from summary)
+                if not st.session_state.get("Invnumb"):
+                    st.session_state['Invnumb'] = f"{cust_type[self.cust_selection]}{date.today().year}{st.session_state.gen_inv_numb}"
 
-            self.inv_no = st.text_input("Inv Number",disabled=True, key="Invnumb")
+            self.inv_no = st.text_input("Inv Number", disabled=True, key="Invnumb")
 
         if st.session_state.edit_qout_inv:
-            self.inv_date = st.date_input("Inv Date", format="DD-MM-YYYY", key="date",
-                                      value=st.session_state.edit_qout_inv.get("date"))
-            # self.in_due_date = st.date_input("Inv Due Date", format="DD-MM-YYYY", 
-            #                                  value=st.session_state.edit_qout_inv.get("duedate"), 
-            #                                  key="duedate")
-            future_date  = st.session_state.get('date') + timedelta(days=30)
-            self.in_due_date = st.date_input("Inv Due Date", format="DD-MM-YYYY", value=future_date, key="duedate")
+            saved_date = st.session_state.edit_qout_inv.get("date") or date.today()
+            saved_due  = st.session_state.edit_qout_inv.get("duedate") or (saved_date + timedelta(days=30))
+            # Seed keys only if missing or None so the widget shows the right value
+            if not st.session_state.get("date"):
+                st.session_state["date"] = saved_date
+            if not st.session_state.get("duedate"):
+                st.session_state["duedate"] = saved_due
         else:
-            self.inv_date = st.date_input("Inv Date", datetime.today(), format="DD-MM-YYYY", key="date")
-            st.session_state["duedate"]  = st.session_state.get('date') + timedelta(days=30)
-            # st.write(st.session_state["duedate"])
-            self.in_due_date = st.date_input("Inv Due Date", format="DD-MM-YYYY", key="duedate")
+            if not st.session_state.get("date"):
+                st.session_state["date"] = date.today()
+            if not st.session_state.get("duedate"):
+                st.session_state["duedate"] = st.session_state["date"] + timedelta(days=30)
+
+        self.inv_date    = st.date_input("Inv Date",     format="DD-MM-YYYY", key="date")
+        self.in_due_date = st.date_input("Inv Due Date", format="DD-MM-YYYY", key="duedate")
+
+        # Guard against widget returning None before session state is set
+        if self.inv_date is None:
+            self.inv_date = st.session_state.get("date") or date.today()
+        if self.in_due_date is None:
+            self.in_due_date = st.session_state.get("duedate") or (self.inv_date + timedelta(days=30))
             
         return [self.inv_no, self.inv_date.strftime("%d %b %Y"), self.in_due_date.strftime("%d %b %Y")]
         

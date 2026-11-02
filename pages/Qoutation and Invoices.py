@@ -14,7 +14,7 @@ inject_css()
 _GAS_URL = (
     "https://script.google.com/macros/s/"
     "AKfycbw5AToPOc7vpUhNGLLQ-9SEaWiXTXkBRDny8AiLBPwgUwCV"
-    "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&invNumb="
+    "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&menue=createQoutation&invNumb="
 )
 _GAS_INV_URL = (
     "https://script.google.com/macros/s/"
