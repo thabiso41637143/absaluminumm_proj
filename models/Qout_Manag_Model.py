@@ -87,12 +87,16 @@ class Qoute_Manager:
 
     def set_qout_UI(self):
         if st.session_state.get('update_qoutation'):
-            if st.session_state.get('email'):
+            if st.session_state.get('send_email_flag'):
                 self.send_email()
             elif st.session_state.get('edit_qoutation'):
                 self.set_qoutation()
-            else:
+            elif st.session_state.get('selected_qoutation', {}).get('invoice details'):
                 self.fin_inv_conv()
+            else:
+                # update_qoutation is True but no valid sub-state — reset to avoid loop
+                st.session_state.update_qoutation = False
+                st.rerun()
             return
 
         # ── Header row ───────────────────────────────────────────────────
@@ -335,14 +339,14 @@ class Qoute_Manager:
         qout_details = self.get_qout_details(inv_numb=qout.get('inv_numb'))
         st.session_state.edit_qout_inv = {
             "Invto":     qout.get('inv_to'),
-            "cust_tax":  qout_details.get('cust_tax'),
-            "email":     qout_details.get('cust_email'),
-            "contnumb":  qout_details.get('cust_numb'),
-            "adr":       qout_details.get('cust_address'),
+            "cust_tax":  str(qout_details.get('cust_tax') or ''),
+            "email":     qout_details.get('cust_email') or '',
+            "contnumb":  qout_details.get('cust_numb') or '',
+            "adr":       qout_details.get('cust_address') or '',
             "custtype":  qout_details.get('cust_group'),
-            "Invnumb":   qout_details.get('inv_numb'),
-            "date":      qout_details.get('inv_date'),
-            "duedate":   qout_details.get('inv_duedate'),
+            "Invnumb":   str(qout_details.get('inv_numb')),
+            "date":      date.fromisoformat(str(qout_details.get('inv_date'))[:10]) if qout_details.get('inv_date') else date.today(),
+            "duedate":   date.fromisoformat(str(qout_details.get('inv_duedate'))[:10]) if qout_details.get('inv_duedate') else date.today() + timedelta(days=30),
         }
         items = self.get_qout_items(inv_numb=qout.get('inv_numb'))
         st.session_state.material_df = pd.DataFrame(items)
@@ -357,8 +361,23 @@ class Qoute_Manager:
                 columns=[c for c in ['inv_numb', 'item_id'] if c in st.session_state.material_df.columns],
                 inplace=True,
             )
+        # Force-write widget keys so the form renders with existing values
+        # (overrides any stale values from a previous session)
+        eqi = st.session_state.edit_qout_inv
+        st.session_state["Invto"]    = eqi.get("Invto") or ""
+        st.session_state["cust_tax"] = eqi.get("cust_tax") or ""
+        st.session_state["email"]    = eqi.get("email") or ""
+        st.session_state["contnumb"] = eqi.get("contnumb") or ""
+        st.session_state["adr"]      = eqi.get("adr") or ""
+        st.session_state["custtype"] = eqi.get("custtype")
+        st.session_state["Invnumb"]  = eqi.get("Invnumb") or ""
+        st.session_state["date"]     = eqi.get("date")
+        st.session_state["duedate"]  = eqi.get("duedate")
         st.session_state.update_qoutation = True
         st.session_state.edit_qoutation = True
+        # Clear any stale flags from other flows that share update_qoutation
+        st.session_state.send_email_flag = False
+        st.session_state.pop("selected_qoutation", None)
         st.rerun()
 
     def set_qoutation(self):
@@ -367,7 +386,7 @@ class Qoute_Manager:
             "AKfycbw5AToPOc7vpUhNGLLQ-9SEaWiXTXkBRDny8AiLBPwgUwCV"
             "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&menue=createQoutation&invNumb="
         ))
-        qout_ui.gen_ui(gen_message="**Generate Quotation**")
+        qout_ui.gen_ui(gen_message="**Edit Quotation**")
 
     def clone_qoutation(self, qout):
         """Duplicate a quotation to a new invoice number as a fresh Waiting draft."""
@@ -643,18 +662,19 @@ class Qoute_Manager:
                     with st.spinner("⏳ Sending..."):
                         requests.get(base_url + "?" + urlencode(params))
                     st.session_state.update_qoutation = False
-                    st.session_state.email = False
+                    st.session_state.send_email_flag = False
                     st.session_state.update_invoice = False
                     st.rerun()
             with cancel_col:
                 if st.button("✖ Cancel", key=f"cancel_{qout.get('inv_numb')}", use_container_width=True):
                     st.session_state.update_qoutation = False
-                    st.session_state.email = False
+                    st.session_state.send_email_flag = False
                     st.session_state.update_invoice = False
                     st.rerun()
 
     def send_qoutation(self, qout):
         st.session_state.selected_qoutation = {"qoutation": qout}
         st.session_state.update_qoutation = True
-        st.session_state.email = True
+        st.session_state.send_email_flag = True
+        st.session_state.pop("edit_qoutation", None)
         st.rerun()

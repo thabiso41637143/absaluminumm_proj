@@ -63,7 +63,7 @@ class InvManager:
 
     def set_inv_UI(self):
         if st.session_state.get('update_invoice'):
-            if st.session_state.get('email'):
+            if st.session_state.get('send_email_flag'):
                 self.email_inv()
             elif st.session_state.get('editing_invoice'):
                 self._edit_inv_ui()
@@ -260,7 +260,7 @@ class InvManager:
         elif current_action == "email":
             st.session_state.pop(action_key, None)
             st.session_state.selected_qoutation = {'invoice': inv}
-            st.session_state.email = True
+            st.session_state.send_email_flag = True
             st.session_state.update_invoice = True
             st.rerun()
 
