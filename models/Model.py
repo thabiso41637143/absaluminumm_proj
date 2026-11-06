@@ -924,7 +924,7 @@ class InvQouteUI:
             cust_type[record['category']] = record["starting_number"]       
 
         st.write("**Invoice Details**")
-        if st.session_state.edit_qout_inv and not st.session_state.get("_editing_draft"):
+        if st.session_state.edit_qout_inv and not st.session_state.get("_editing_draft") and not st.session_state.get("_is_clone"):
             # Editing a previously saved quotation — lock the customer selector
             st.session_state["custtype"] = st.session_state.edit_qout_inv.get("custtype")
             if "Invnumb" not in st.session_state:

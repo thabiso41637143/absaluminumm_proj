@@ -377,28 +377,30 @@ class Qoute_Manager:
         st.session_state.edit_qoutation = True
         # Clear any stale flags from other flows that share update_qoutation
         st.session_state.send_email_flag = False
+        st.session_state["_is_clone"]    = False
         st.session_state.pop("selected_qoutation", None)
         st.rerun()
 
     def set_qoutation(self):
+        is_clone = st.session_state.get("_is_clone", False)
+        label = "**Generate Cloned Quotation**" if is_clone else "**Edit Quotation**"
         qout_ui = InvQouteUI(invQouteUrl=(
             "https://script.google.com/macros/s/"
             "AKfycbw5AToPOc7vpUhNGLLQ-9SEaWiXTXkBRDny8AiLBPwgUwCV"
             "KsLwqrAJWkjOUVhZd7k9qA/exec?option=supabaseDB&menue=createQoutation&invNumb="
         ))
-        qout_ui.gen_ui(gen_message="**Edit Quotation**")
+        qout_ui.gen_ui(gen_message=label)
 
     def clone_qoutation(self, qout):
-        """Duplicate a quotation to a new invoice number as a fresh Waiting draft."""
+        """Clone a quotation to a new invoice number and open it in the form for editing."""
         src_numb = qout.get("inv_numb")
         details  = self.get_qout_details(src_numb) or {}
         items    = self.get_qout_items(src_numb)
-        totals   = self.get_qout_totals(src_numb) or {}
 
         try:
-            with st.spinner("📋 Cloning quotation..."):
+            with st.spinner("📋 Preparing clone..."):
                 # Allocate a fresh invoice number from the generator
-                new_gen = supabase.table("invGenerator").insert({"status": "used"}).execute()
+                new_gen = supabase.table("invGenerator").insert({"status": "unused"}).execute()
                 if not new_gen.data:
                     st.error("Could not generate a new invoice number.")
                     return
@@ -409,48 +411,64 @@ class Qoute_Manager:
                 cat_map      = {r["category"]: r["starting_number"]
                                 for r in st.session_state.get("customer_category", [])}
                 prefix       = cat_map.get(cust_group, 1)
-                new_inv_numb = int(f"{prefix}{date.today().year}{new_gen_id}")
+                new_inv_numb = str(int(f"{prefix}{date.today().year}{new_gen_id}"))
 
-                # ── Clone InvoiceDetails ──────────────────────────────────
-                new_details = {k: v for k, v in details.items()
-                               if k != "inv_numb"}
-                new_details["inv_numb"]    = new_inv_numb
-                new_details["inv_date"]    = date.today().isoformat()
-                new_details["inv_duedate"] = (date.today() + timedelta(days=30)).isoformat()
-                supabase.table("InvoiceDetails").insert(new_details).execute()
+            # ── Seed session state exactly like edit_qoutation, but with the new number ──
+            st.session_state.edit_qout_inv = {
+                "Invto":    details.get("inv_to") or "",
+                "cust_tax": str(details.get("cust_tax") or ""),
+                "email":    details.get("cust_email") or "",
+                "contnumb": details.get("cust_numb") or "",
+                "adr":      details.get("cust_address") or "",
+                "custtype": details.get("cust_group"),
+                "Invnumb":  new_inv_numb,
+                "date":     date.today(),
+                "duedate":  date.today() + timedelta(days=30),
+            }
 
-                # ── Clone Items ───────────────────────────────────────────
-                new_items = []
-                for item in items:
-                    new_item = {k: v for k, v in item.items()
-                                if k not in ("item_id", "inv_numb")}
-                    new_item["inv_numb"] = new_inv_numb
-                    new_items.append(new_item)
-                if new_items:
-                    supabase.table("Items").insert(new_items).execute()
+            # ── Load items from the source quote into material_df ──────────
+            st.session_state.material_df = pd.DataFrame(items)
+            if not st.session_state.material_df.empty:
+                st.session_state.material_df.rename(columns={
+                    "total_price":      "Total amount",
+                    "unit_price":       "Unit price",
+                    "item_description": "Description",
+                    "quantity":         "Quantity",
+                }, inplace=True)
+                st.session_state.material_df.drop(
+                    columns=[c for c in ["inv_numb", "item_id"]
+                             if c in st.session_state.material_df.columns],
+                    inplace=True,
+                )
 
-                # ── Clone Totals ──────────────────────────────────────────
-                new_totals = {k: v for k, v in totals.items()
-                              if k != "inv_numb"}
-                new_totals["inv_numb"] = new_inv_numb
-                supabase.table("Totals").insert(new_totals).execute()
+            # ── Force-write all widget keys so the form renders correctly ──
+            eqi = st.session_state.edit_qout_inv
+            st.session_state["Invto"]    = eqi["Invto"]
+            st.session_state["cust_tax"] = eqi["cust_tax"]
+            st.session_state["email"]    = eqi["email"]
+            st.session_state["contnumb"] = eqi["contnumb"]
+            st.session_state["adr"]      = eqi["adr"]
+            st.session_state["custtype"] = eqi["custtype"]
+            st.session_state["Invnumb"]  = eqi["Invnumb"]
+            st.session_state["date"]     = eqi["date"]
+            st.session_state["duedate"]  = eqi["duedate"]
 
-                # ── Create fresh QouteSummary row (status = Waiting) ──────
-                src_qout = st.session_state.get("_qout_summary_idx", {}).get(src_numb, {})
-                new_qout = {k: v for k, v in src_qout.items()
-                            if k not in ("inv_numb", "qoute_pdf", "qoute_doc")}
-                new_qout["inv_numb"]     = new_inv_numb
-                new_qout["status"]       = "Waiting"
-                new_qout["payed_amount"] = 0
-                new_qout["oust_amount"]  = totals.get("total_balance", 0)
-                new_qout["qoute_pdf"]    = ""
-                new_qout["qoute_doc"]    = ""
-                supabase.table("QouteSummary").insert(new_qout).execute()
+            # Store the new gen_id so submit_inv_qout_details() can mark it "used"
+            st.session_state["gen_inv_numb"] = new_gen_id
 
-            st.success(f"✅ Quotation cloned as new draft #{new_inv_numb}. "
-                       f"Find it under **Waiting** status.")
-            init_data()
-            st.session_state.loaded = True
+            # Clear auto-calculation trackers so totals seed fresh from the cloned items
+            st.session_state.pop("inst_cost_input", None)
+            st.session_state.pop("dep_input", None)
+            st.session_state.pop("_inst_cost_subtotal", None)
+            st.session_state.pop("_dep_total_am", None)
+
+            # ── Open the quotation form (same route as Edit) ───────────────
+            st.session_state.update_qoutation = True
+            st.session_state.edit_qoutation   = True
+            st.session_state.send_email_flag  = False
+            st.session_state["_is_clone"]     = True
+            st.session_state.pop("selected_qoutation", None)
+            st.session_state.pop("finalise_details", None)
             st.rerun()
 
         except Exception as e:
