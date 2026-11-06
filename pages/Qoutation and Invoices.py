@@ -32,6 +32,7 @@ def _clear_form():
         "custtype", "Invnumb", "date", "duedate",
         "sub_tot", "less_disc", "tax_amount", "tot_bal",
         "discount_input_value", "inst_cost_input", "tax_input", "dep_input",
+        "_inst_cost_subtotal", "_dep_total_am",
         "finalise_details", "results_status", "qoute_results",
     ):
         st.session_state.pop(key, None)

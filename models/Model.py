@@ -270,12 +270,30 @@ class InvQouteUI:
         else:
             st.session_state['discount_input_value'] = 0.00
 
+        subtotal = float(st.session_state.material_df["Total amount"].sum())
+
         self.inst_cost = st.checkbox("Add Installation Cost", value=True, key="add_inst")
         if self.inst_cost:
-            st.session_state['inst_cost_input'] = float((st.session_state.material_df["Total amount"].sum()) * 0.1)
-            self.inst_cost_input = st.number_input("**Installation Cost**",format="%0.2f", min_value=self.inst_cost_input, key="inst_cost_input")
+            calc_inst = round(subtotal * 0.1, 2)
+            prev_subtotal_inst = st.session_state.get("_inst_cost_subtotal")
+            prev_inst = st.session_state.get("inst_cost_input")
+
+            if prev_subtotal_inst is None:
+                # First render — seed with the calculated default
+                st.session_state['inst_cost_input'] = calc_inst
+            elif prev_subtotal_inst != subtotal:
+                # Subtotal changed — only auto-update if the user hasn't manually overridden.
+                # A manual override means the stored value differs from what the old subtotal formula would give.
+                old_calc = round(prev_subtotal_inst * 0.1, 2)
+                if prev_inst is None or round(float(prev_inst), 2) == old_calc:
+                    # Value still matches the formula — follow the subtotal
+                    st.session_state['inst_cost_input'] = calc_inst
+
+            st.session_state['_inst_cost_subtotal'] = subtotal
+            self.inst_cost_input = st.number_input("**Installation Cost**", format="%0.2f", min_value=0.00, key="inst_cost_input")
         else:
             st.session_state['inst_cost_input'] = 0.00
+            st.session_state.pop('_inst_cost_subtotal', None)
         
         self.tax = st.checkbox("Add Tax Rate", value=False, key="add_tax", disabled=True)
         if self.tax:
@@ -286,11 +304,25 @@ class InvQouteUI:
         
         self.deposite = st.checkbox("Add Deposit", value=True, key="add_dep")
         if st.session_state.get('add_dep'):
-            self.total_am = float(((st.session_state.material_df["Total amount"].sum()) + st.session_state.get("inst_cost_input", 0.0) + st.session_state.get("tax_input", 0.0)) - st.session_state.get('discount_input_value',0.00))
-            st.session_state['dep_input'] = (self.total_am * self.DEPOSITE_RATE)
-            self.deposite_input = st.number_input("**Deposit**",format="%0.2f", min_value=self.deposite_input,max_value=self.total_am, key="dep_input")
+            self.total_am = float((subtotal + st.session_state.get("inst_cost_input", 0.0) + st.session_state.get("tax_input", 0.0)) - st.session_state.get('discount_input_value', 0.00))
+            calc_dep = round(self.total_am * self.DEPOSITE_RATE, 2)
+            prev_total_am_dep = st.session_state.get("_dep_total_am")
+            prev_dep = st.session_state.get("dep_input")
+
+            if prev_total_am_dep is None:
+                # First render — seed with the calculated default
+                st.session_state['dep_input'] = calc_dep
+            elif prev_total_am_dep != self.total_am:
+                # Running total changed — only auto-update if the user hasn't manually overridden.
+                old_calc_dep = round(prev_total_am_dep * self.DEPOSITE_RATE, 2)
+                if prev_dep is None or round(float(prev_dep), 2) == old_calc_dep:
+                    st.session_state['dep_input'] = calc_dep
+
+            st.session_state['_dep_total_am'] = self.total_am
+            self.deposite_input = st.number_input("**Deposit**", format="%0.2f", min_value=0.00, max_value=self.total_am, key="dep_input")
         else:
             st.session_state['dep_input'] = 0.00
+            st.session_state.pop('_dep_total_am', None)
 
     def add_items_validator(self, item_descr, item_unit_price):
         self.valid = []
@@ -618,8 +650,10 @@ class InvQouteUI:
             "discount":          float(sub.get("discount_input_value") or 0),
         }
 
+        self.invQouteUrl += str(inv_details.get("inv_numb"))
+
         if not self.invnumb_exists(invoice_numb=inv_details.get("inv_numb")):
-            self.invQouteUrl += str(inv_details.get("inv_numb"))
+            # ── NEW quotation — insert all rows ───────────────────────────
             try:
                 response = supabase.table("InvoiceDetails").insert(inv_details).execute()
                 response = supabase.table("Items").insert(items).execute()
@@ -659,8 +693,79 @@ class InvQouteUI:
             except Exception as e:
                 st.error(f"❌ An unexpected error occurred: {e}")
                 print(f"[submit_inv_qout_details] error: {e}")
+
         else:
-            st.write("Qoutation already exist.")
+            # ── EXISTING quotation — update DB rows then regenerate document ──
+            # inv_details includes inv_numb which is not updatable, so exclude it
+            details_update = {k: v for k, v in inv_details.items() if k != "inv_numb"}
+            totals_update  = {k: v for k, v in total_inv.items() if k != "inv_numb"}
+
+            try:
+                with st.spinner("⏳ Updating quotation... Please wait."):
+                    # Update header and totals
+                    supabase.table("InvoiceDetails").update(details_update)\
+                        .eq("inv_numb", int(inv_numb)).execute()
+
+                    # Replace items: delete existing rows then re-insert
+                    supabase.table("Items").delete()\
+                        .eq("inv_numb", int(inv_numb)).execute()
+                    supabase.table("Items").insert(items).execute()
+
+                    # Update totals
+                    supabase.table("Totals").update(totals_update)\
+                        .eq("inv_numb", int(inv_numb)).execute()
+
+                    # Update QouteSummary totals — preserve payed_amount, recalculate outstanding
+                    existing_summary = st.session_state.get("_qout_summary_idx", {}).get(int(inv_numb), {})
+                    payed = float(existing_summary.get("payed_amount") or 0)
+                    new_total = float(total_inv.get("total_balance") or 0)
+                    supabase.table("QouteSummary").update({
+                        "total_amount": new_total,
+                        "oust_amount":  max(new_total - payed, 0),
+                    }).eq("inv_numb", int(inv_numb)).execute()
+
+                    # Regenerate the document via GAS
+                    results_invqout = requests.get(self.invQouteUrl, timeout=120)
+
+                print(f"[GAS update] status={results_invqout.status_code}")
+                print(f"[GAS update] response text={results_invqout.text[:500]}")
+
+                if results_invqout.status_code != 200:
+                    st.error(f"❌ The document server returned an error (HTTP {results_invqout.status_code}). "
+                             f"The data was saved — please retry generating from Manage Quotations.")
+                    return
+
+                raw_text = results_invqout.text.strip()
+                if not raw_text:
+                    st.error("❌ The document server returned an empty response. "
+                             "The data was saved — please retry generating from Manage Quotations.")
+                    return
+
+                try:
+                    parsed = json.loads(raw_text)
+                except json.JSONDecodeError as je:
+                    st.error(f"❌ Could not read the server response (not valid JSON): {je}\n\nRaw response: {raw_text[:300]}")
+                    return
+
+                # Update the PDF/Doc links in QouteSummary from the new GAS response
+                if isinstance(parsed, dict):
+                    link_update = {}
+                    if parsed.get("qoute_pdf"):
+                        link_update["qoute_pdf"] = parsed["qoute_pdf"]
+                    if parsed.get("qoute_doc"):
+                        link_update["qoute_doc"] = parsed["qoute_doc"]
+                    if link_update:
+                        supabase.table("QouteSummary").update(link_update)\
+                            .eq("inv_numb", int(inv_numb)).execute()
+
+                self.reset_ui(parsed)
+
+            except requests.exceptions.Timeout:
+                st.error("❌ The request to the document server timed out. "
+                         "The data was saved — please retry generating from Manage Quotations.")
+            except Exception as e:
+                st.error(f"❌ An unexpected error occurred while updating: {e}")
+                print(f"[submit_inv_qout_details update] error: {e}")
             
     def print_qoute_results(self):
         st.success("✅ Qoutation completed")
