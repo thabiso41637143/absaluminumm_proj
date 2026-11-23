@@ -1710,8 +1710,8 @@ class StaffAttendence:
         if self.rate_data.get('_no_rate'):
             raise ValueError(f"No contract rate found for {self.staff.get('full_names')} — skipped.")
         payload = {k: v for k, v in self.rate_data.items() if k != '_no_rate'}
-        print(payload)
         supabase.table('StaffAttendance').insert(payload).execute()
+        init_att_reg()  # refresh cache immediately so the new day is visible
 
     def get_unpaid_days(self):
         """Attendance rows for this staff member not yet marked as Paid."""
@@ -1756,11 +1756,11 @@ class StaffAttendence:
         init_att_reg()
 
     def print_att(self):
-        att_list = self.get_days()
+        all_days = self.get_days()
         staff_id = self.staff.get('user_id')
 
-        # Build rate_id -> label map for display, and also a label -> rate record
-        # map that the edit form needs to let the user change the rate/job.
+        # Build rate_id -> label map for display, and a list of rate records
+        # the edit form uses to let the user change the rate/job.
         rate_lookup  = {}   # rate_id -> display label
         rate_records = []   # all rate rows for this staff member
         for r in st.session_state.get('init_staffrate', []):
@@ -1771,13 +1771,39 @@ class StaffAttendence:
                 rate_lookup[r.get('rate_id')] = lbl
                 rate_records.append(r)
 
-        if not att_list:
-            st.write('There is no days worked.')
-            return
-
         st.subheader('Days worked'.upper())
 
-        # Column headers
+        # ── Status filter (default: Unpaid) ───────────────────────────────
+        filter_key = f"att_filter_{staff_id}"
+        if filter_key not in st.session_state:
+            st.session_state[filter_key] = 'Unpaid'
+
+        filter_col, _ = st.columns([2, 4])
+        with filter_col:
+            status_filter = st.selectbox(
+                "Filter by status",
+                options=['Unpaid', 'Paid', 'All'],
+                key=filter_key,
+                label_visibility="collapsed",
+            )
+
+        # Apply filter
+        if status_filter == 'All':
+            att_list = all_days
+        else:
+            att_list = [a for a in all_days
+                        if str(a.get('status', '')).strip().lower() == status_filter.lower()]
+
+        # Count metric
+        count = len(att_list)
+        label_map = {'Unpaid': 'Unpaid days', 'Paid': 'Paid days', 'All': 'Total days'}
+        st.caption(f"**{count}** {label_map.get(status_filter, 'days')} shown")
+
+        if not att_list:
+            st.info(f"No {status_filter.lower()} days found." if status_filter != 'All' else "No days worked recorded yet.")
+            return
+
+        # ── Column headers ────────────────────────────────────────────────
         hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([2, 3, 1.5, 1.5, 1, 1])
         hc1.markdown("**Date Attended**")
         hc2.markdown("**Rate / Job**")
@@ -1828,7 +1854,6 @@ class StaffAttendence:
                             key=f"att_edit_date_{att_id}"
                         )
                     with ec2:
-                        # Rate / Job selector — show all rates for this staff member
                         if rate_records:
                             rate_labels = [rate_lookup.get(r.get('rate_id'), '—') for r in rate_records]
                             rate_id_map = {rate_lookup.get(r.get('rate_id'), '—'): r.get('rate_id') for r in rate_records}
@@ -1861,11 +1886,11 @@ class StaffAttendence:
                     with sv1:
                         if st.button("💾 Save", key=f"att_edit_save_{att_id}", type="primary", use_container_width=True):
                             self.update_att_row(
-                                att_id      = att_id,
-                                att_date    = new_date.isoformat(),
-                                hours_worked= new_hours,
-                                status      = new_status,
-                                rate_id     = new_rate_id,
+                                att_id       = att_id,
+                                att_date     = new_date.isoformat(),
+                                hours_worked = new_hours,
+                                status       = new_status,
+                                rate_id      = new_rate_id,
                             )
                             st.session_state.pop(edit_key, None)
                             st.rerun()
@@ -1880,7 +1905,7 @@ class StaffAttendence:
             c1.write(row.get('att_date', '—'))
             c2.write(rate_lookup.get(row.get('rate_id'), '—'))
             c3.write(row.get('hours_worked', '—'))
-            status_val = str(row.get('status', '—'))
+            status_val   = str(row.get('status', '—'))
             status_color = "green" if status_val.lower() == "paid" else "orange"
             c4.markdown(f"<span style='color:{status_color}; font-weight:600;'>{status_val}</span>", unsafe_allow_html=True)
             if c5.button("✏️", key=f"att_edit_btn_{att_id}", use_container_width=True, help="Edit this day"):
