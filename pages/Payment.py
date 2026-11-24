@@ -38,8 +38,8 @@ if user.get_user():
 
     manager = PaymentManager()
 
-    summary_tab, pay_quote_tab, pay_inv_tab = st.tabs(
-        ["📊 Payment Summary", "💳 Pay Quotation", "🧾 Pay Invoice"]
+    summary_tab, pay_quote_tab, pay_inv_tab, full_paid_tab = st.tabs(
+        ["📊 Payment Summary", "💳 Pay Quotation", "🧾 Pay Invoice", "✅ Full Payment Summary"]
     )
 
     with summary_tab:
@@ -48,3 +48,5 @@ if user.get_user():
         manager.pay_quotation()
     with pay_inv_tab:
         manager.pay_invoice()
+    with full_paid_tab:
+        manager.full_payment_summary()

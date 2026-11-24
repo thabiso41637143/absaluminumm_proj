@@ -355,6 +355,62 @@ class PaymentManager:
             print(f"[save_invoice_payment] error: {e}")
 
     # ------------------------------------------------------------------
+    # Tab 4 — Full Payment Summary
+    # ------------------------------------------------------------------
+    def fully_paid_invoices(self):
+        """Invoices that have been fully paid (outstanding == 0)."""
+        return [
+            i for i in st.session_state.invoice_summary
+            if float(i.get("out_amount", 0) or 0) == 0
+        ]
+
+    def full_payment_summary(self):
+        st.markdown("### ✅ Full Payment Summary")
+        st.caption("Invoices that have been fully paid.")
+
+        invoices = self.fully_paid_invoices()
+
+        if not invoices:
+            st.info("No fully paid invoices found.")
+            return
+
+        # Headline metric
+        total_collected = sum(float(i.get("paid_amount", 0) or 0) for i in invoices)
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.metric("✅ Fully Paid Invoices", len(invoices))
+        with col2:
+            st.metric("💵 Total Collected", _money(total_collected))
+
+        st.markdown("<hr style='border:1px solid #d1d5db; margin:0.5rem 0 1rem 0;'>",
+                    unsafe_allow_html=True)
+
+        df = pd.DataFrame(invoices)
+        cols = [c for c in ["inv_numb", "inv_to", "inv_date", "total_amount",
+                            "paid_amount", "out_amount", "inv_status"]
+                if c in df.columns]
+        df = df[cols].copy()
+
+        if "inv_date" in df.columns:
+            df["inv_date"] = df["inv_date"].apply(_fmt_date)
+        for col in ("total_amount", "paid_amount", "out_amount"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").apply(_money)
+
+        st.dataframe(
+            df, hide_index=True, use_container_width=True,
+            column_config={
+                "inv_numb":     st.column_config.TextColumn("Invoice #"),
+                "inv_to":       st.column_config.TextColumn("Client"),
+                "inv_date":     st.column_config.TextColumn("Invoice Date"),
+                "total_amount": st.column_config.TextColumn("Total Amount"),
+                "paid_amount":  st.column_config.TextColumn("Amount Paid"),
+                "out_amount":   st.column_config.TextColumn("Outstanding"),
+                "inv_status":   st.column_config.TextColumn("Status"),
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Shared: items table
     # ------------------------------------------------------------------
     def _render_items(self, items):
