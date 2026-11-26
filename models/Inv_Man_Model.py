@@ -338,17 +338,41 @@ class InvManager:
         totals   = st.session_state.get("_inv_totals_idx", {}).get(inv_numb, {})
 
         # Pre-populate session state so InvQouteUI's edit path picks it up
+        def _parse_date(val):
+            from datetime import datetime, date as date_type
+            if isinstance(val, date_type) and not isinstance(val, datetime):
+                return val
+            if isinstance(val, datetime):
+                return val.date()
+            if isinstance(val, str):
+                for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                    try:
+                        return datetime.strptime(val, fmt).date()
+                    except ValueError:
+                        continue
+            return None
+
+        from datetime import date as date_type, timedelta
+        parsed_date    = _parse_date(details.get("inv_date"))    or date_type.today()
+        parsed_duedate = _parse_date(details.get("inv_duedate")) or (parsed_date + timedelta(days=30))
+
         st.session_state.edit_qout_inv = {
-            "Invto":    details.get("inv_to"),
-            "cust_tax": details.get("cust_tax"),
-            "email":    details.get("cust_email"),
-            "contnumb": details.get("cust_numb"),
-            "adr":      details.get("cust_address"),
-            "custtype": details.get("cust_group"),
-            "Invnumb":  details.get("inv_numb"),
-            "date":     details.get("inv_date"),
-            "duedate":  details.get("inv_duedate"),
+            "Invto":        details.get("inv_to") or "",
+            "cust_tax":     str(details.get("cust_tax") or ""),
+            "email":        details.get("cust_email") or "",
+            "contnumb":     str(details.get("cust_numb") or ""),
+            "adr":          details.get("cust_address") or "",
+            "custtype":     details.get("cust_group"),
+            "Invnumb":      str(details.get("inv_numb") or ""),
+            "date":         parsed_date,
+            "duedate":      parsed_duedate,
+            "order_number": details.get("order_number") or "",
         }
+
+        # Always force-write the date keys so stale strings from a prior run don't survive
+        st.session_state["date"]         = parsed_date
+        st.session_state["duedate"]      = parsed_duedate
+        st.session_state["order_number"] = details.get("order_number") or ""
 
         # Load existing items into the confirmed items DataFrame
         df = pd.DataFrame(items)
@@ -424,6 +448,7 @@ class InvManager:
             "cust_numb":    st.session_state.get("contnumb"),
             "cust_address": st.session_state.get("adr"),
             "cust_tax":     int(st.session_state.get("cust_tax") or 0),
+            "order_number": st.session_state.get("order_number") or None,
         }
 
         new_total = float(st.session_state.get("tot_bal", 0))

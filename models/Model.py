@@ -239,11 +239,23 @@ class InvQouteUI:
             st.session_state["contnumb"] = st.session_state.edit_qout_inv.get("contnumb") or ""
         if "adr" not in st.session_state:
             st.session_state["adr"] = st.session_state.edit_qout_inv.get("adr") or ""
+        if "order_number" not in st.session_state:
+            st.session_state["order_number"] = st.session_state.edit_qout_inv.get("order_number") or ""
         self.inv_to = st.text_input("Invoiced To", key="Invto")
         self.cust_tax = st.text_input("Client VAT", key="cust_tax")
         self.cust_email = st.text_input("Client Email", key="email")
         self.cust_cont = st.text_input("Contact Numbers", key="contnumb")
         self.cust_addr = st.text_area("Client Address", key="adr", height="content")
+        # custtype may not be in session state yet on first render (the selectbox
+        # in inv_details hasn't run yet), so also check edit_qout_inv as a fallback.
+        effective_custtype = (
+            st.session_state.get("custtype")
+            or st.session_state.edit_qout_inv.get("custtype")
+        )
+        if effective_custtype == "ALW Properties":
+            self.order_number = st.text_input("Order Number", key="order_number")
+        else:
+            st.session_state["order_number"] = ""
 
     def totals(self):
         st.write("**TOTALS**")
@@ -546,6 +558,8 @@ class InvQouteUI:
                 st.markdown(f"- **Email:** {_val('email')}")
                 st.markdown(f"- **Contact:** {_val('contnumb')}")
                 st.markdown(f"- **Address:** {_val('adr')}")
+                if st.session_state.get("custtype") == "ALW Properties":
+                    st.markdown(f"- **Order Number:** {_val('order_number')}")
 
         # ── Items table (currency-formatted, read-only) ──────────────────
         st.markdown("**Items**")
@@ -636,6 +650,7 @@ class InvQouteUI:
             "cust_numb":   sub.get("contnumb"),
             "cust_address":sub.get("adr"),
             "cust_tax":    int(sub.get("cust_tax")) if sub.get("cust_tax") else 0,
+            "order_number": sub.get("order_number") or None,
         }
 
         total_inv = {
@@ -896,6 +911,7 @@ class InvQouteUI:
                         "email":                st.session_state.get("email"),
                         "contnumb":             st.session_state.get("contnumb"),
                         "adr":                  st.session_state.get("adr"),
+                        "order_number":         st.session_state.get("order_number"),
                         "custtype":             st.session_state.get("custtype"),
                         "date":                 st.session_state.get("date"),
                         "duedate":              st.session_state.get("duedate"),
@@ -928,7 +944,7 @@ class InvQouteUI:
             # Editing a previously saved quotation — lock the customer selector
             st.session_state["custtype"] = st.session_state.edit_qout_inv.get("custtype")
             if "Invnumb" not in st.session_state:
-                st.session_state["Invnumb"] = st.session_state.edit_qout_inv.get("Invnumb")
+                st.session_state["Invnumb"] = str(st.session_state.edit_qout_inv.get("Invnumb") or "")
             self.cust_selection = st.selectbox("Select Customer", cust_type.keys(), index=None,
                                                key="custtype", disabled=True)
             self.inv_no = st.text_input("Inv Number", disabled=True, key="Invnumb")
@@ -947,13 +963,25 @@ class InvQouteUI:
             self.inv_no = st.text_input("Inv Number", disabled=True, key="Invnumb")
 
         if st.session_state.edit_qout_inv:
-            saved_date = st.session_state.edit_qout_inv.get("date") or date.today()
-            saved_due  = st.session_state.edit_qout_inv.get("duedate") or (saved_date + timedelta(days=30))
-            # Seed keys only if missing or None so the widget shows the right value
-            if not st.session_state.get("date"):
-                st.session_state["date"] = saved_date
-            if not st.session_state.get("duedate"):
-                st.session_state["duedate"] = saved_due
+            def _to_date(val):
+                """Convert a DB value (string, datetime, or date) to a date object."""
+                if isinstance(val, date) and not isinstance(val, datetime):
+                    return val
+                if isinstance(val, datetime):
+                    return val.date()
+                if isinstance(val, str):
+                    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                        try:
+                            return datetime.strptime(val, fmt).date()
+                        except ValueError:
+                            continue
+                return None
+
+            saved_date = _to_date(st.session_state.edit_qout_inv.get("date")) or date.today()
+            saved_due  = _to_date(st.session_state.edit_qout_inv.get("duedate")) or (saved_date + timedelta(days=30))
+            # Always overwrite — a stale string from a prior run would crash date_input
+            st.session_state["date"]    = saved_date
+            st.session_state["duedate"] = saved_due
         else:
             if not st.session_state.get("date"):
                 st.session_state["date"] = date.today()
