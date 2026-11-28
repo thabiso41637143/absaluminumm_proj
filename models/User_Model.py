@@ -17,10 +17,11 @@ class User:
 
             if st.button("Login"):
                 try:
+                    cleaned_username = user_name.strip().lower()
                     user_details = (
                         supabase.table('Profiles')
                         .select('username', 'role', 'email')
-                        .eq('username', user_name)
+                        .ilike('username', cleaned_username)
                         .execute()
                     )
                     supabase.auth.sign_in_with_password({

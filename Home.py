@@ -42,10 +42,11 @@ if not st.session_state.get("user"):
 
             if st.button("Login", type="primary", use_container_width=True):
                 try:
+                    cleaned_username = user_name.strip().lower()
                     user_details = (
                         supabase.table("Profiles")
                         .select("username", "role", "email")
-                        .eq("username", user_name)
+                        .ilike("username", cleaned_username)
                         .execute()
                     )
                     if not user_details.data:
@@ -208,7 +209,7 @@ with chart_col:
                 showarrow=False,
             )],
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.info("No invoice data available.")
 
