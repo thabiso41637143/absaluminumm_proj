@@ -1,5 +1,5 @@
 import streamlit as st
-from models.Model import init_data, inject_css
+from models.Model import init_data, inject_css, fmt_currency
 from models.Qout_Manag_Model import *
 import webbrowser
 from models.User_Model import *
@@ -15,9 +15,9 @@ inject_css()
 
 def qouteTable(df):
     df = df.drop(columns=[c for c in ["qoute_doc"] if c in df.columns])
-    df["payed_amount"] = df["payed_amount"].apply(lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-    df["total_amount"] = df["total_amount"].apply(lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-    df["oust_amount"]  = df["oust_amount"].apply(lambda x: f"R {float(x):,.2f}"  if str(x).replace('.', '', 1).isdigit() else x)
+    df["payed_amount"] = df["payed_amount"].apply(fmt_currency)
+    df["total_amount"] = df["total_amount"].apply(fmt_currency)
+    df["oust_amount"]  = df["oust_amount"].apply(fmt_currency)
     st.dataframe(
         df,
         hide_index=True,
@@ -57,8 +57,14 @@ def quotation_list():
         with c3: st.metric("✅ Invoiced", invoiced)
         st.markdown("<hr style='border:1px solid #d1d5db; margin:0.5rem 0 1rem 0;'>", unsafe_allow_html=True)
 
-        df = pd.DataFrame(st.session_state.qouteSummary)
-        qouteTable(df=df)
+        # Exclude invoiced quotations from the summary list view
+        active_quotes = [q for q in st.session_state.qouteSummary
+                         if str(q.get('status', '')).lower() != 'invoiced']
+        if not active_quotes:
+            st.info("No active quotations found.")
+        else:
+            df = pd.DataFrame(active_quotes)
+            qouteTable(df=df)
     else:
         st.info("No quotations found.")
 

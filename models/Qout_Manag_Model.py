@@ -556,8 +556,8 @@ class Qoute_Manager:
             )
             df = pd.DataFrame(invoice_items)
             df = df.drop(columns=[c for c in ["item_id", "inv_numb"] if c in df.columns])
-            df["unit_price"]  = df["unit_price"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-            df["total_price"] = df["total_price"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+            df["unit_price"]  = df["unit_price"].apply(lambda x: fmt_currency(x))
+            df["total_price"] = df["total_price"].apply(lambda x: fmt_currency(x))
             st.dataframe(df, hide_index=True, width="stretch",
                 column_config={
                     "item_description": st.column_config.TextColumn("Description"),

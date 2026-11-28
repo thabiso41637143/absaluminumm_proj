@@ -152,6 +152,24 @@ def inject_css():
     """Inject shared app CSS. Safe to call multiple times – Streamlit deduplicates."""
     st.markdown(_CSS, unsafe_allow_html=True)
 
+def fmt_currency(x, decimals=2):
+    """Safely format a value as Rand currency.
+
+    Handles None, NaN, negative numbers, strings, and any other type that
+    can't be coerced — always returning a string so the resulting DataFrame
+    column is a clean string dtype (Arrow-safe for st.dataframe).
+    """
+    try:
+        if x is None:
+            val = 0.0
+        elif isinstance(x, float) and pd.isna(x):
+            val = 0.0
+        else:
+            val = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    return f"R {val:,.{decimals}f}"
+
 def gen_inv_numb():
     st.session_state.inv_numbs  = supabase.table("invGenerator")\
     .select("gen_id").eq("status","unused").execute().data
@@ -789,9 +807,7 @@ class InvQouteUI:
         # Format currency columns only if present
         for col in ("payed_amount", "total_amount", "oust_amount"):
             if col in df.columns:
-                df[col] = df[col].apply(
-                    lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x
-                )
+                df[col] = df[col].apply(fmt_currency)
 
         st.dataframe(
             df,
@@ -1583,7 +1599,7 @@ class Contract:
             rate_df = rate_df.drop(columns=drop_cols)
             if 'description' not in rate_df.columns:
                 rate_df['description'] = None
-            rate_df["amount"] = rate_df["amount"].apply(lambda x: f"R {float(x):.2f}" if str(x).replace('.', '', 1).isdigit() else x)
+            rate_df["amount"] = rate_df["amount"].apply(fmt_currency)
             # Order columns for readability
             ordered = [c for c in ['rate_type', 'description', 'amount', 'status'] if c in rate_df.columns]
             rate_df = rate_df[ordered]

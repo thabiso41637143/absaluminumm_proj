@@ -48,11 +48,15 @@ class InvManager:
 
     def _filtered_data(self):
         status_filter = st.session_state.get("inv_status_filter", "All")
-        all_data = list(st.session_state.invoice_summary)
+        # By default exclude completed invoices; the "Complete" filter tab lets users see them explicitly
+        all_data = [i for i in st.session_state.invoice_summary
+                    if str(i.get('inv_status', '')).lower() != 'complete']
         if status_filter == "In Progress":
             return [i for i in all_data if str(i.get('inv_status', '')).lower() == 'inprogress']
         elif status_filter == "Complete":
-            return [i for i in all_data if str(i.get('inv_status', '')).lower() == 'complete']
+            # Explicitly requested — return complete invoices from the full set
+            return [i for i in st.session_state.invoice_summary
+                    if str(i.get('inv_status', '')).lower() == 'complete']
         elif status_filter == "Outstanding":
             return [i for i in all_data if float(i.get('out_amount', 0) or 0) > 0]
         return all_data
@@ -236,7 +240,7 @@ class InvManager:
                     st.session_state[action_key] = "clone"
                     st.rerun()
 
-            b4, b5, b6, b7 = st.columns(4)
+            b4, b5 = st.columns(2)
             with b4:
                 if st.button("💳 Payment", key=f"payment_{inv_numb}", use_container_width=True):
                     st.session_state[action_key] = "payment"
@@ -245,6 +249,8 @@ class InvManager:
                 if st.button("🔁 To Quote", key=f"toquote_{inv_numb}", use_container_width=True):
                     st.session_state[action_key] = "toquote"
                     st.rerun()
+
+            b6, b7 = st.columns(2)
             with b6:
                 if st.button("⏪ Incomplete", key=f"incomplete_{inv_numb}", use_container_width=True):
                     st.session_state[action_key] = "incomplete"
@@ -646,11 +652,18 @@ class InvManager:
     # ------------------------------------------------------------------
 
     def show_inv_tables(self):
-        inv_df = pd.DataFrame(st.session_state.invoice_summary)
+        # Exclude completed invoices from the summary list view
+        active_invoices = [i for i in st.session_state.invoice_summary
+                           if str(i.get('inv_status', '')).lower() != 'complete']
+        inv_df = pd.DataFrame(active_invoices)
+        if inv_df.empty:
+            st.info("No active invoices found.")
+            return
         inv_df = inv_df.drop(columns=[c for c in ["inv_id", "inv_doc"] if c in inv_df.columns])
-        inv_df["total_amount"] = inv_df["total_amount"].apply(lambda x: f"R {float(x):,.2f}" if str(x).replace('.', '', 1).isdigit() else x)
-        inv_df["paid_amount"]  = inv_df["paid_amount"].apply(lambda x: f"R {float(x):,.2f}"  if str(x).replace('.', '', 1).isdigit() else x)
-        inv_df["out_amount"]   = inv_df["out_amount"].apply(lambda x: f"R {float(x):,.2f}"   if str(x).replace('.', '', 1).isdigit() else x)
+
+        inv_df["total_amount"] = inv_df["total_amount"].apply(fmt_currency)
+        inv_df["paid_amount"]  = inv_df["paid_amount"].apply(fmt_currency)
+        inv_df["out_amount"]   = inv_df["out_amount"].apply(fmt_currency)
         inv_df["inv_date"]     = pd.to_datetime(inv_df["inv_date"], errors="coerce").dt.strftime("%d %b %Y")
 
         st.dataframe(

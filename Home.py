@@ -7,6 +7,7 @@ from models.Model import (
 from models.User_Model import User
 from datetime import date
 import pandas as pd
+import plotly.graph_objects as go
 
 abs_icon = open("Images/AbsAppIcon.png", "rb").read()
 st.set_page_config(
@@ -179,19 +180,35 @@ with i3:
 chart_col, table_col = st.columns([1, 1], gap="large")
 
 with chart_col:
-    st.markdown("**Paid vs Outstanding — last 10 invoices**")
+    st.markdown("**Paid vs Outstanding Invoices**")
     if invoices:
-        chart_data = pd.DataFrame(invoices[-10:])
-        chart_data = chart_data[["inv_numb", "paid_amount", "out_amount"]].copy()
-        chart_data["paid_amount"] = pd.to_numeric(chart_data["paid_amount"], errors="coerce").fillna(0)
-        chart_data["out_amount"]  = pd.to_numeric(chart_data["out_amount"],  errors="coerce").fillna(0)
-        chart_data = chart_data.rename(columns={
-            "inv_numb":    "Invoice #",
-            "paid_amount": "Paid (R)",
-            "out_amount":  "Outstanding (R)",
-        })
-        chart_data = chart_data.set_index("Invoice #")
-        st.bar_chart(chart_data, color=["#16a34a", "#b91c1c"])
+        all_inv_df = pd.DataFrame(invoices)
+        all_inv_df["out_amount"] = pd.to_numeric(all_inv_df["out_amount"], errors="coerce").fillna(0)
+
+        fully_paid   = int((all_inv_df["out_amount"] == 0).sum())
+        has_outstanding = int((all_inv_df["out_amount"] > 0).sum())
+
+        fig = go.Figure(data=[go.Pie(
+            labels=["Fully Paid", "Outstanding"],
+            values=[fully_paid, has_outstanding],
+            hole=0.55,
+            marker=dict(colors=["#16a34a", "#b91c1c"]),
+            textinfo="label+value",
+            hovertemplate="%{label}: %{value} invoice(s)<extra></extra>",
+        )])
+        fig.update_layout(
+            margin=dict(t=10, b=10, l=10, r=10),
+            height=280,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+            annotations=[dict(
+                text=f"<b>{len(invoices)}</b><br>Total",
+                x=0.5, y=0.5,
+                font_size=16,
+                showarrow=False,
+            )],
+        )
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No invoice data available.")
 
